@@ -1,0 +1,14 @@
+{
+  "display_name": "Slashie",
+  "name": "Slashie",
+  "version": "1.1.1",
+  "description": "",
+  "author": "gong",
+  "homepage": "",
+  "js": "index.js",
+  "css": "",
+  "loading_order": 10,
+  "requires": [],
+  "optional": [],
+  "tags": []
+}
