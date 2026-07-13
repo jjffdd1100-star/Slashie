@@ -1,8 +1,8 @@
 {
   "display_name": "Slashie",
   "name": "Slashie",
-  "version": "1.1.1",
-  "description": "",
+  "version": "1.1.2",
+  "description": "SillyTavern 에 커스텀 슬래시 커맨드 등을 추가합니다.",
   "author": "gong",
   "homepage": "",
   "js": "index.js",
