@@ -20,6 +20,7 @@ import { applyWsHlColor, applyWsDeleteColor, initMoveSnapshotClearing } from './
 import { registerBasicCommands } from './commands-basic.js';
 import { registerFindChangeCommands } from './find-change.js';
 import { initDragFeatures } from './drag-features.js';
+import { initTextboxSearch } from './textbox-search.js';
 
 // ─── Panel CSS ────────────────────────────────────────────────────────────
 function injectThemeCSS() {
@@ -182,6 +183,48 @@ function injectThemeCSS() {
             background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.08));
             filter: brightness(0.96);
         }
+
+        /* ── 팝업 텍스트박스(CSS/캐릭터 설명/첫 메시지) 찾기+바꾸기 ──────────────────────
+           textarea는 내부에 <mark>를 못 넣으므로, 위에 겹치는 투명 오버레이(color:transparent)에
+           매치 부분만 <mark>로 감싸서 밑줄만 보이게 함(배경/글자는 그대로 투명).
+           border-bottom 대신 text-decoration을 써서 글자 베이스라인에 더 밀착되게 함.
+           포커스된(현재) 매치는 점선→실선으로만 바꿔서 구분. */
+        .ws-textbox-overlay mark {
+            background: transparent !important;
+            color: transparent !important;
+            padding: 0 !important;
+            text-decoration-line: underline;
+            text-decoration-style: dotted;
+            text-decoration-color: var(--ws-pin-color);
+            text-decoration-thickness: 2px;
+            text-underline-offset: 2.5px;
+            text-decoration-skip-ink: none;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+        .ws-textbox-overlay mark.ws-tb-cur {
+            text-decoration-style: solid;
+        }
+        /* 텍스트박스 옆에 심는 돋보기 버튼 — 사용자 정의 CSS(-css)와 캐릭터 설명/첫 메시지
+           (-char) 두 종류로 클래스를 나눠서 각각 크기를 따로 조절할 수 있게 함.
+           기기/테마마다 옆 버튼(외부 미디어 등) 크기가 크게 달라서, 실측 대신 여기 두 값을
+           직접 취향껏 조절하는 게 가장 예측 가능함(커스텀 CSS에서 이 규칙을 덮어쓰면 됨). */
+        .ws-tb-search-btn-css.ws-stitch-btn {
+            min-width: 0;
+            padding: 3px 6px;
+            margin-left: 0;
+        }
+        .ws-tb-search-btn-css.ws-stitch-btn i {
+            font-size: 9px;
+        }
+        .ws-tb-search-btn-char.ws-stitch-btn {
+            min-width: 0;
+            padding: 5px 9px;
+            margin-left: 0;
+        }
+        .ws-tb-search-btn-char.ws-stitch-btn i {
+            font-size: 11px;
+        }
     `;
     document.head.appendChild(s);
 }
@@ -195,4 +238,5 @@ function injectThemeCSS() {
     registerBasicCommands();
     registerFindChangeCommands();
     initDragFeatures();
+    initTextboxSearch();
 })();

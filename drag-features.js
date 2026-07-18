@@ -2,7 +2,7 @@
 // 드래그 선택 시 뜨는 검색/치환/빠른수정 필, QR 버튼 드래그 연동, 향상된 메시지 삭제.
 
 import { ESC_SPECIAL } from './utils.js';
-import { getChat, editMessage, wsSettings, copyText, copyFullChat } from './state.js';
+import { getChat, editMessage, editTranslatedText, getSearchableText, wsSettings, copyText, copyFullChat } from './state.js';
 import { stripText, stripReasoningBlocks } from './utils.js';
 import { createPanel, getPanelBody, closePanel, inputBox, btn } from './panel-ui.js';
 import { safeHighlight } from './highlight.js';
@@ -35,32 +35,47 @@ function getMatchContext(selRange, contextLen = 60) {
 
 // beforeCtx/afterCtx 길이를 점점 줄여가며(마크다운 기호가 문맥 안에 끼어있을 경우 대비)
 // "문맥 + (기호 0개 이상) + 타겟 + (기호 0개 이상) + 문맥" 패턴이 원본에서 유일하게 1번만
-// 매치되는 지점을 찾음. 'd' 플래그로 캡처 그룹의 정확한 시작/끝 오프셋을 직접 얻음
+// 매치되는 지점을 찾음. 'd' 플래그로 캡처 그룹의 정확한 시작/끝 오프셋을 직접 얻음.
+// 에딧모드의 "번역문 우선"이 켜져있으면 번역문(msg.extra.display_text)에서 먼저 찾고,
+// 없거나 못 찾으면 원문(msg.mes)에서 찾음 — 어느 쪽에서 찾았는지 field로 알려줌.
 function locateRawOffset(msgIdx, beforeCtx, target, afterCtx) {
-    const raw = getChat()[msgIdx]?.mes;
-    if (raw === undefined) return null;
+    const msg = getChat()[msgIdx];
+    if (!msg) return null;
     const MD_GAP = '[*_~`]{0,10}'; // 무한 반복(*) 대신 최대 10개로 제한 — 백트래킹 폭주(ReDoS) 방지
     const escTarget = ESC_SPECIAL(target);
-    for (const len of [60, 30, 15, 8, 4, 2, 1, 0]) {
-        const b = beforeCtx.slice(Math.max(0, beforeCtx.length - len));
-        const a = afterCtx.slice(0, len);
-        const pattern = ESC_SPECIAL(b) + MD_GAP + '(' + escTarget + ')' + MD_GAP + ESC_SPECIAL(a);
-        let re;
-        try { re = new RegExp(pattern, 'gd'); } catch { continue; }
-        const matches = [...raw.matchAll(re)];
-        if (matches.length === 1 && matches[0].indices?.[1]) {
-            const [s, e] = matches[0].indices[1];
-            return { start: s, end: e };
+    const tryField = (raw, field) => {
+        if (raw === undefined) return null;
+        for (const len of [60, 30, 15, 8, 4, 2, 1, 0]) {
+            const b = beforeCtx.slice(Math.max(0, beforeCtx.length - len));
+            const a = afterCtx.slice(0, len);
+            const pattern = ESC_SPECIAL(b) + MD_GAP + '(' + escTarget + ')' + MD_GAP + ESC_SPECIAL(a);
+            let re;
+            try { re = new RegExp(pattern, 'gd'); } catch { continue; }
+            const matches = [...raw.matchAll(re)];
+            if (matches.length === 1 && matches[0].indices?.[1]) {
+                const [s, e] = matches[0].indices[1];
+                return { start: s, end: e, field };
+            }
         }
+        return null;
+    };
+    if (wsSettings.translationSearchEnabled && msg.extra?.display_text) {
+        const hit = tryField(msg.extra.display_text, 'display_text');
+        if (hit) return hit;
     }
-    return null;
+    return tryField(msg.mes, 'mes');
 }
 
-async function replaceAtOffset(msgIdx, start, end, rep) {
-    const chat = getChat();
-    const mes = chat[msgIdx].mes;
-    await editMessage(msgIdx, mes.slice(0, start) + rep + mes.slice(end));
-    await SillyTavern.getContext().saveChat?.();
+async function replaceAtOffset(msgIdx, start, end, rep, field = 'mes') {
+    const msg = getChat()[msgIdx];
+    if (field === 'display_text') {
+        const raw = msg.extra?.display_text ?? '';
+        await editTranslatedText(msgIdx, raw.slice(0, start) + rep + raw.slice(end));
+    } else {
+        const mes = msg.mes;
+        await editMessage(msgIdx, mes.slice(0, start) + rep + mes.slice(end));
+        await SillyTavern.getContext().saveChat?.();
+    }
 }
 
 // 연필 패널이 떠있는 동안 드래그했던 그 Range를 그대로(재검색 없이) 하이라이트
@@ -88,11 +103,15 @@ function smartInsertSpacing(fullText, insertPos, insertedText) {
     return fullText.slice(0, insertPos) + left + insertedText + right + fullText.slice(insertPos);
 }
 
-async function insertAtOffset(msgIdx, pos, text) {
-    const chat = getChat();
-    const raw = chat[msgIdx].mes;
-    await editMessage(msgIdx, smartInsertSpacing(raw, pos, text));
-    await SillyTavern.getContext().saveChat?.();
+async function insertAtOffset(msgIdx, pos, text, field = 'mes') {
+    const msg = getChat()[msgIdx];
+    if (field === 'display_text') {
+        const raw = msg.extra?.display_text ?? '';
+        await editTranslatedText(msgIdx, smartInsertSpacing(raw, pos, text));
+    } else {
+        await editMessage(msgIdx, smartInsertSpacing(msg.mes, pos, text));
+        await SillyTavern.getContext().saveChat?.();
+    }
 }
 
 function openQuickReplacePanel(msgIdx, beforeCtx, selText, afterCtx, domRange) {
@@ -106,7 +125,7 @@ function openQuickReplacePanel(msgIdx, beforeCtx, selText, afterCtx, domRange) {
         closePanel(PANEL_ID); clearQuickReplaceHighlight();
         const loc = locateRawOffset(msgIdx, beforeCtx, selText, afterCtx);
         if (!loc) { toastr.error('원문에서 위치를 찾지 못했습니다.', '', { timeOut:3000 }); return; }
-        await replaceAtOffset(msgIdx, loc.start, loc.end, rep);
+        await replaceAtOffset(msgIdx, loc.start, loc.end, rep, loc.field);
     };
     // ◀/▶: 드래그한 텍스트는 그대로 두고, 그 자리 앞(◀) 또는 뒤(▶)에 입력값만 끼워넣음(치환 아님)
     const insertLeft = document.createElement('div'); insertLeft.style.cssText = 'display:flex;gap:6px;';
@@ -115,7 +134,7 @@ function openQuickReplacePanel(msgIdx, beforeCtx, selText, afterCtx, domRange) {
         closePanel(PANEL_ID); clearQuickReplaceHighlight();
         const loc = locateRawOffset(msgIdx, beforeCtx, selText, afterCtx);
         if (!loc) { toastr.error('원문에서 위치를 찾지 못했습니다.', '', { timeOut:3000 }); return; }
-        await insertAtOffset(msgIdx, before ? loc.start : loc.end, val);
+        await insertAtOffset(msgIdx, before ? loc.start : loc.end, val, loc.field);
     };
     function iconBtn(faClass, onClick) {
         const b = document.createElement('button'); b.className = 'ws-btn ws-btn-accent';
@@ -171,15 +190,19 @@ function initDragSearch() {
         const offY = parseFloat(rootStyle.getPropertyValue('--ws-pill-offset-y')) || 70;
         pill.style.left = `${x + offX}px`;
         pill.style.top  = `${y + offY}px`;
-        pill.appendChild(makePillIcon('fa-solid fa-wand-magic-sparkles', () => { removePill(); runChange(text, false, false); }));
-        document.body.appendChild(pill);
+        // '바꾸기'(마술봉) / '빠른 수정'(지우개) 아이콘은 에딧모드에서 각각 독립적으로 끌 수 있음
+        if (!wsSettings.pillWandDisabled) {
+            pill.appendChild(makePillIcon('fa-solid fa-wand-magic-sparkles', () => { removePill(); runChange(text, false, false); }));
+        }
         let matchCtx = null;
         try { matchCtx = getMatchContext(range); } catch {}
-        if (matchCtx) {
+        if (matchCtx && !wsSettings.pillEraserDisabled) {
             const rawSelText = range.toString();
             const clonedRange = range.cloneRange();
             pill.appendChild(makePillIcon('fa-solid fa-eraser', () => { removePill(); openQuickReplacePanel(matchCtx.msgIdx, matchCtx.beforeCtx, rawSelText, matchCtx.afterCtx, clonedRange); }));
         }
+        if (!pill.children.length) { removePill(); return; } // 아이콘이 하나도 없으면 필 자체를 띄우지 않음
+        document.body.appendChild(pill);
         requestAnimationFrame(() => {
             const r = pill.getBoundingClientRect();
             if (r.right  > window.innerWidth)  pill.style.left = `${window.innerWidth  - r.width  - 8}px`;
@@ -202,7 +225,6 @@ function initDragSearch() {
     }
     function onEnd(cx, cy) {
         setTimeout(() => {
-            if (wsSettings.pillDisabled) { removePill(); return; }
             // ST 메시지 편집모드는 textarea를 씀 — textarea 안 텍스트 선택은 Range API가 아니라
             // 브라우저 자체 selectionStart/End로 처리되고, 이때 Range의 startContainer가
             // textarea 자체가 아니라 그 바깥을 가리키는 경우가 있어 closest()로 못 잡을 수 있음.
@@ -248,7 +270,7 @@ function initQRDragInject() {
                 if (selText) { copyText(selText); return; }
                 const typed = document.getElementById('send_textarea')?.value?.trim();
                 if (typed) { copyText(typed); return; }
-                await copyFullChat(text => stripText(stripReasoningBlocks(text)));
+                await copyFullChat(text => stripText(stripReasoningBlocks(text)), getSearchableText);
             };
             document.addEventListener('click', onClickOnce, { capture:true, once:true });
             setTimeout(() => document.removeEventListener('click', onClickOnce, { capture:true }), 400);

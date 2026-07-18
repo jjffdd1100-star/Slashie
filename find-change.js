@@ -5,8 +5,8 @@ import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.j
 import { SlashCommand } from '/scripts/slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from '/scripts/slash-commands/SlashCommandArgument.js';
 
-import { escapeHTML, buildAllMatches, applyWholeWord, applyFiller, maskTags, parseChangeRangeInput, parseRangeInputFlexible } from './utils.js';
-import { getChat, editMessage } from './state.js';
+import { escapeHTML, buildAllMatches, applyWholeWord, applyFiller, maskTags, maskReasoningBlocks, parseChangeRangeInput, parseRangeInputFlexible } from './utils.js';
+import { getChat, editMessage, editTranslatedText, wsSettings } from './state.js';
 import { createPanel, getPanelBody, closePanel, centerOf, keepCenter, btn, inputBox, searchOptions, renderList, makeFollowChk } from './panel-ui.js';
 import { applyDOMHighlights, clearDOMHighlights, updateCurrentMark, scrollToMark } from './highlight.js';
 
@@ -33,6 +33,16 @@ function resolvePanelOpenAttempt(myType) {
     return true;
 }
 
+// 목록에서 현재 선택된 항목이 스크롤 맨 위가 아니라 정중앙에 오게 맞춤(리스트가 길 때
+// 매번 맨 위로 튀는 게 아니라, 검토 중이던 위치 근처를 계속 보여주기 위함).
+function centerActiveInList(fb) {
+    requestAnimationFrame(() => {
+        const scrollEl = fb.querySelector('.ws-thin-scroll');
+        const activeEl = scrollEl?.querySelector('.ws-result-item.active');
+        if (scrollEl && activeEl) scrollEl.scrollTop = Math.max(0, activeEl.offsetTop - scrollEl.clientHeight / 2 + activeEl.clientHeight / 2);
+    });
+}
+
 // find/change 키워드 입력 패널에서 공용으로 쓰는 검색 범위 제한 입력창.
 // /change '모두 바꾸기'와 동일 문법("12-45", "3,5,20-30" 등) — 플레이스홀더로 용도를 안내.
 function rangeLimitRow() {
@@ -45,7 +55,7 @@ function rangeLimitRow() {
 }
 
 // ─── /find ────────────────────────────────────────────────────────────────
-export function openFindKeywordPanel() {
+export function openFindKeywordPanel(useTranslation = wsSettings.translationSearchEnabled) {
     if (!resolvePanelOpenAttempt('find')) return;
     const PANEL_ID = 'ws-find-panel';
     const panel = createPanel(PANEL_ID), body = getPanelBody(panel);
@@ -60,19 +70,25 @@ export function openFindKeywordPanel() {
         const range = rangeUI.getRange();
         if (range === 'invalid') { toastr.error('범위를 올바르게 지정해 주세요.', '', { timeOut:3000 }); return; }
         const center = centerOf(panel); closePanel(PANEL_ID);
-        runFind(kw, opts.getCaseSensitive(), opts.getIgnoreSpace(), opts.getWholeWord(), opts.getIgnoreTags(), center, range.idxs);
+        runFind(kw, opts.getCaseSensitive(), opts.getIgnoreSpace(), opts.getWholeWord(), opts.getIgnoreTags(), center, range.idxs, useTranslation);
     };
     row.appendChild(btn('찾기', doFind, 'ws-btn-accent'));
     body.appendChild(row); setTimeout(() => input.focus(), 50);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doFind(); });
 }
 
-export function runFind(keyword, caseSensitive, ignoreSpace, wholeWord = false, ignoreTags = false, posCenter = null, allowedIdxs = null) {
+export function runFind(keyword, caseSensitive, ignoreSpace, wholeWord = false, ignoreTags = false, posCenter = null, allowedIdxs = null, useTranslation = wsSettings.translationSearchEnabled) {
     if (!resolvePanelOpenAttempt('find')) return;
     const PANEL_ID = 'ws-find-panel', chat = getChat();
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const flags = caseSensitive ? 'g' : 'gi';
-    const allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs);
+    // 번역 검색은 메시지 종류(유저/캐릭터) 구분 없이 항상 msg.extra.display_text(번역문)를
+    // 먼저 보고, 없으면 원문(msg.mes)으로 자동 폴백함 — 결과적으로 채팅 전체가 번호 빠짐 없이
+    // 검색 범위에 들어옴.
+    // 번역 확장이 이미 추론 내용을 걸러서 번역문을 만드는 경우가 많아 여기선 그 전역 옵션을 안 씀.
+    const getText = useTranslation ? (msg => msg.extra?.display_text ?? msg.mes) : null;
+    const ignoreReasoningEffective = useTranslation ? false : wsSettings.ignoreReasoningBlocks;
+    const allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs, ignoreReasoningEffective, getText);
     if (!allMatches.length) { toastr.info('검색 결과가 없습니다.', '', { timeOut:3000 }); return; }
 
     const matchCountPerMsg = {};
@@ -96,10 +112,11 @@ export function runFind(keyword, caseSensitive, ignoreSpace, wholeWord = false, 
         else if (forceScroll) scrollToMark(current, m.msgIdx, false);
     }
 
-    // 채팅 안 초록색 마크를 직접 탭했을 때 — 목록뷰였으면 결과뷰로 바꾸고 그 위치로 바로 점프
+    // 채팅 안 초록색 마크를 직접 탭했을 때 — 이미 화면에 보이는 지점을 클릭한 것이므로
+    // 목록뷰였으면 결과뷰로 바꾸되, 스크롤은 움직이지 않음(이전/다음 버튼과는 다르게 취급)
     function jumpToMatch(idx) {
         showingList = false;
-        navigate(idx);
+        current = idx; updateCurrentMark(current); render();
     }
 
     function render() {
@@ -115,6 +132,7 @@ export function runFind(keyword, caseSensitive, ignoreSpace, wholeWord = false, 
                 return item;
             });
             renderList(fb, items, () => { showingList = false; render(); });
+            centerActiveInList(fb);
         } else {
             setFixed(); fb.innerHTML = '';
             const m = allMatches[current];
@@ -139,7 +157,7 @@ export function runFind(keyword, caseSensitive, ignoreSpace, wholeWord = false, 
 }
 
 // ─── /change ──────────────────────────────────────────────────────────────
-export function openChangeKeywordPanel() {
+export function openChangeKeywordPanel(useTranslation = wsSettings.translationSearchEnabled) {
     if (!resolvePanelOpenAttempt('change')) return;
     const PANEL_ID = 'ws-change-panel';
     const panel = createPanel(PANEL_ID), body = getPanelBody(panel);
@@ -154,20 +172,23 @@ export function openChangeKeywordPanel() {
         const range = rangeUI.getRange();
         if (range === 'invalid') { toastr.error('범위를 올바르게 지정해 주세요.', '', { timeOut:3000 }); return; }
         const center = centerOf(panel); closePanel(PANEL_ID);
-        runChange(kw, opts.getCaseSensitive(), opts.getIgnoreSpace(), opts.getWholeWord(), opts.getIgnoreTags(), center, range.idxs);
+        runChange(kw, opts.getCaseSensitive(), opts.getIgnoreSpace(), opts.getWholeWord(), opts.getIgnoreTags(), center, range.idxs, useTranslation);
     };
     row.appendChild(btn('찾기', doChange, 'ws-btn-accent'));
     body.appendChild(row); setTimeout(() => input.focus(), 50);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doChange(); });
 }
 
-export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false, ignoreTags = false, posCenter = null, allowedIdxs = null) {
+export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false, ignoreTags = false, posCenter = null, allowedIdxs = null, useTranslation = wsSettings.translationSearchEnabled) {
     if (!resolvePanelOpenAttempt('change')) return;
     const PANEL_ID = 'ws-change-panel', chat = getChat();
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re_esc = applyWholeWord(applyFiller(escaped, ignoreSpace), wholeWord);
     const flags = caseSensitive ? 'g' : 'gi';
-    let allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs);
+    // 번역 검색은 메시지 종류 구분 없이 항상 번역문 우선, 없으면 원문 폴백.
+    const getText = useTranslation ? (msg => msg.extra?.display_text ?? msg.mes) : null;
+    const ignoreReasoningEffective = useTranslation ? false : wsSettings.ignoreReasoningBlocks;
+    let allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs, ignoreReasoningEffective, getText);
     if (!allMatches.length) { toastr.info('검색 결과가 없습니다.', '', { timeOut:3000 }); return; }
 
     let uniqueIdxs = [...new Set(allMatches.map(m => m.msgIdx))];
@@ -187,10 +208,11 @@ export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false
         if (followScroll) scrollToMark(current, m.msgIdx, true);
         else if (forceScroll) scrollToMark(current, m.msgIdx, false);
     }
-    // 채팅 안 초록색 마크를 직접 탭했을 때 — 메뉴/목록뷰였으면 검토뷰로 바꾸고 그 위치로 바로 점프
+    // 채팅 안 초록색 마크를 직접 탭했을 때 — 이미 화면에 보이는 지점을 클릭한 것이므로
+    // 메뉴/목록뷰였으면 검토뷰로 바꾸되, 스크롤은 움직이지 않음(이전/다음 버튼과는 다르게 취급)
     function jumpToMatch(idx) {
         mode = 'one';
-        navigate(idx);
+        current = idx; updateCurrentMark(current); render();
     }
     function buildReFlags() {
         let f = flags.includes('g') ? flags : flags + 'g';
@@ -200,19 +222,33 @@ export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false
     }
     // ignoreTags일 때 검색은 마스킹된 텍스트로 하되(태그 안 텍스트 제외),
     // 실제 치환은 오프셋이 동일한 원본 raw 텍스트를 그대로 잘라붙여서 적용 — 검색/치환 불일치 방지
+    const getRaw = msgIdx => {
+        if (!useTranslation) return chat[msgIdx].mes;
+        return chat[msgIdx].extra?.display_text ?? chat[msgIdx].mes;
+    };
+    const setRaw = (msgIdx, val) => {
+        if (!useTranslation) return editMessage(msgIdx, val);
+        // 번역문이 실제로 있었던 경우에만 번역문 필드에 씀 — 애초에 번역문이 없어서 원문으로
+        // 폴백해 매치를 찾았던 경우엔 그 원문 자체에 반영해야 함
+        return chat[msgIdx].extra?.display_text !== undefined ? editTranslatedText(msgIdx, val) : editMessage(msgIdx, val);
+    };
     async function doReplaceOne(msgIdx, matchIdx, rep) {
-        const raw = chat[msgIdx].mes;
-        const searchText = ignoreTags ? maskTags(raw) : raw;
+        const raw = getRaw(msgIdx);
+        let searchText = raw;
+        if (ignoreTags) searchText = maskTags(searchText);
+        if (ignoreReasoningEffective) searchText = maskReasoningBlocks(searchText);
         const re = new RegExp(re_esc, buildReFlags());
         const matches = [...searchText.matchAll(re)];
         const m = matches[matchIdx];
         if (!m?.indices) return;
         const [s, e] = m.indices[0];
-        await editMessage(msgIdx, raw.slice(0, s) + rep + raw.slice(e));
+        await setRaw(msgIdx, raw.slice(0, s) + rep + raw.slice(e));
     }
     async function doReplaceAll(msgIdx, rep) {
-        const raw = chat[msgIdx].mes;
-        const searchText = ignoreTags ? maskTags(raw) : raw;
+        const raw = getRaw(msgIdx);
+        let searchText = raw;
+        if (ignoreTags) searchText = maskTags(searchText);
+        if (ignoreReasoningEffective) searchText = maskReasoningBlocks(searchText);
         const re = new RegExp(re_esc, buildReFlags());
         const matches = [...searchText.matchAll(re)];
         if (!matches.length) return;
@@ -222,7 +258,7 @@ export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false
             const [s, e] = matches[i].indices[0];
             result = result.slice(0, s) + rep + result.slice(e);
         }
-        await editMessage(msgIdx, result);
+        await setRaw(msgIdx, result);
     }
 
     function render() {
@@ -238,6 +274,7 @@ export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false
                 return item;
             });
             renderList(cb, items, () => { mode = listReturnMode; render(); });
+            centerActiveInList(cb);
 
         } else if (mode === 'menu') {
             setFixed(); cb.innerHTML = '';
@@ -310,7 +347,7 @@ export function runChange(keyword, caseSensitive, ignoreSpace, wholeWord = false
                 lastReplace = repInput.value;
                 await doReplaceOne(m.msgIdx, m.matchIdx, repInput.value);
                 await SillyTavern.getContext().saveChat?.(); // 계속 검토 중이라 다음 클릭까지 시간이 걸릴 수 있어 매번 확실히 저장
-                allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs);
+                allMatches = buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord, ignoreTags, allowedIdxs, ignoreReasoningEffective, getText);
                 uniqueIdxs = [...new Set(allMatches.map(am => am.msgIdx))];
                 matchCountPerMsg = {}; allMatches.forEach(({ msgIdx }) => { matchCountPerMsg[msgIdx] = (matchCountPerMsg[msgIdx]||0)+1; });
                 if (!allMatches.length) { toastr.success('단어 수정이 완료되었습니다.', '', { timeOut:3000 }); clearDOMHighlights(); closePanel(PANEL_ID); return; }

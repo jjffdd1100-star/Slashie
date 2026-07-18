@@ -44,6 +44,15 @@ export function createPanel(id, posCenter = null, onCloseX = null) {
     body.className = 'ws-panel-body'; body.style.cssText = 'padding:4px 16px 16px;overflow-y:auto;flex:1;';
     panel.appendChild(body);
     document.body.appendChild(panel);
+
+    // ST의 드로어/오버레이(설정창, 캐릭터 시트 등)는 "바깥 클릭 시 닫기"를 document 레벨
+    // 리스너로 구현해둔 것으로 보임 — 우리 패널은 그 드로어 DOM 밖(body 직속)에 붙기 때문에
+    // 패널 안을 클릭/터치해도 "바깥 클릭"으로 오인되어 드로어 전체가 닫혀버리는 문제가 있었음.
+    // 패널 내부에서 발생한 이벤트는 여기서 막아서 document까지 아예 올라가지 않게 함.
+    ['pointerdown', 'mousedown', 'click', 'touchstart'].forEach(evt => {
+        panel.addEventListener(evt, e => e.stopPropagation());
+    });
+
     requestAnimationFrame(() => requestAnimationFrame(() => {
         const pw = panel.offsetWidth, ph = panel.offsetHeight;
         let left, top;

@@ -9,11 +9,12 @@ import { ARGUMENT_TYPE, SlashCommandArgument } from '/scripts/slash-commands/Sla
 import { parseRange, stripText, expandDetails, stripLeadingTagBlock, stripReasoningBlocks } from './utils.js';
 import {
     SUMMARY, getChat, editMessage,
-    loadAndScrollTo, copyText, copyFullChat,
+    loadAndScrollTo, copyText, copyFullChat, getSearchableText,
     wsSettings, saveWsSettings, applyWsHlColor, applyWsDeleteColor, WS_DEFAULT_HL_POSITION_PERCENT,
     getMoveSnapshot, setMoveSnapshot,
 } from './state.js';
 import { createPanel, getPanelBody, makeDraggable, closePanel } from './panel-ui.js';
+import { refreshTextboxButtons } from './textbox-search.js';
 
 // ─── 이동 엔진 (reload 없이 배열+DOM 직접 패치) ──────────────────────────────
 // 삭제 기능과 같은 철학: chat 배열은 splice로, 화면은 DOM 노드를 직접 옮기고
@@ -247,11 +248,12 @@ export function registerBasicCommands() {
         callback: async (_a, value) => {
             const trimmed = String(value ?? '').trim();
             if (trimmed && !parseRange(trimmed)) { await copyText(stripReasoningBlocks(trimmed)); return ''; }
-            if (!trimmed) { await copyFullChat(text => stripText(stripReasoningBlocks(text))); return ''; }
+            // 에딧모드 "번역문 우선"이 켜져있으면 번역문(있으면)을, 없으면 항상 원문을 읽음
+            if (!trimmed) { await copyFullChat(text => stripText(stripReasoningBlocks(text)), getSearchableText); return ''; }
             const chat = getChat(), idxs = parseRange(trimmed);
             if (!idxs) return '';
             const ctx = SillyTavern.getContext(), lines = [];
-            for (const idx of idxs) { const msg = chat[idx]; if (!msg) continue; lines.push(`${msg.name||(msg.is_user?ctx.name1:ctx.name2)}: ${stripText(stripReasoningBlocks(msg.mes))}`); }
+            for (const idx of idxs) { const msg = chat[idx]; if (!msg) continue; lines.push(`${msg.name||(msg.is_user?ctx.name1:ctx.name2)}: ${stripText(stripReasoningBlocks(getSearchableText(msg)))}`); }
             if (!lines.length) return '';
             await copyText(lines.join('\n\n\n')); return '';
         },
@@ -268,7 +270,7 @@ export function registerBasicCommands() {
             else {
                 const chat = getChat(), idxs = trimmed ? parseRange(trimmed) : chat.map((_,i) => i);
                 if (!idxs) return '';
-                cleaned = stripText(stripReasoningBlocks(idxs.map(i => chat[i]?.mes || '').join('\n')));
+                cleaned = stripText(stripReasoningBlocks(idxs.map(i => chat[i] ? getSearchableText(chat[i]) : '').join('\n')));
             }
             toastr.info(`공백 포함: ${cleaned.length.toLocaleString()}<br>공백 제외: ${cleaned.replace(/\s/g,'').length.toLocaleString()}<br>단어: ${cleaned.trim().split(/\s+/).filter(w=>w.length>0).length.toLocaleString()}`, '', { timeOut:12000, escapeHtml:false });
             return '';
@@ -302,7 +304,7 @@ export function registerBasicCommands() {
             if (document.getElementById(PANEL_ID)) { closePanel(PANEL_ID); return ''; } // 다시 부르면 토글로 닫힘
             const chat = getChat();
             const hiddenIdxs = chat.map((msg, idx) => msg.is_system ? idx : null).filter(idx => idx !== null);
-            if (!hiddenIdxs.length) { toastr.info('숨겨진 메세지가 없습니다.', '', { timeOut:5000 }); return ''; }
+            if (!hiddenIdxs.length) { toastr.info('숨겨진 메시지가 없습니다.', '', { timeOut:5000 }); return ''; }
             let pinnedRatio = loadHiddenPinRatio();
             let lastPinSourceIdx = null; // 세션 한정 — 마지막으로 "어느 번호"로 고정했는지(아이콘으로 고정했으면 null)
             const panel = createPanel(PANEL_ID), body = getPanelBody(panel);
@@ -395,8 +397,15 @@ function openEditModePanel() {
         z-index:9999999!important;background:var(--ws-panel);color:var(--ws-text);
         border:1px solid var(--ws-border);border-radius:var(--ws-radius);
         box-shadow:0 4px 16px rgba(0,0,0,0.06),0 8px 32px rgba(0,0,0,0.04);
-        display:flex;flex-direction:column;
+        display:flex;flex-direction:column;max-height:82vh;
         font-size:13px;font-family:inherit;width:160px;opacity:0;overflow:hidden;`;
+
+    // 패널 안에서 발생한 클릭이 document까지 올라가서 "바깥 클릭 시 드로어 닫힘" 리스너를
+    // 건드리지 않게 막음(검색 패널에 적용한 것과 동일한 방식) — 에딧모드에서 설정 확인하며
+    // 여러 항목을 계속 바꾸는 동안 뒤의 설정 드로어가 자꾸 닫혀버리는 문제 방지.
+    ['pointerdown', 'mousedown', 'click', 'touchstart'].forEach(evt => {
+        panel.addEventListener(evt, e => e.stopPropagation());
+    });
 
     // 헤더 — 잡고 움직일 수 있는 드래그 핸들 + 우상단 작은 닫기(X) 버튼
     const header = document.createElement('div');
@@ -414,7 +423,7 @@ function openEditModePanel() {
     makeDraggable(panel, header);
 
     const body = document.createElement('div');
-    body.style.cssText = 'display:flex;flex-direction:column;gap:12px;padding:4px 18px 16px;';
+    body.style.cssText = 'display:flex;flex-direction:column;gap:12px;padding:4px 18px 16px;flex:1;min-height:0;overflow-y:auto;';
     panel.appendChild(body);
 
     function makeRow(labelText) {
@@ -424,7 +433,7 @@ function openEditModePanel() {
         body.appendChild(lbl); return chk;
     }
 
-    const delChk = makeRow('향상된 메시지 삭제');
+    const delChk = makeRow("향상된 '메시지 삭제'");
     delChk.checked = wsSettings.enhancedDelete;
     delChk.addEventListener('change', () => { wsSettings.enhancedDelete = delChk.checked; applyWsDeleteColor(); saveWsSettings(); });
 
@@ -433,9 +442,90 @@ function openEditModePanel() {
     moveChk.checked = wsSettings.moveDisabled;
     moveChk.addEventListener('change', () => { wsSettings.moveDisabled = moveChk.checked; saveWsSettings(); });
 
-    const pillChk = makeRow('드래그 필 끄기');
-    pillChk.checked = wsSettings.pillDisabled;
-    pillChk.addEventListener('change', () => { wsSettings.pillDisabled = pillChk.checked; saveWsSettings(); });
+    // "···구분선···"처럼 점선이 글씨 세로 중앙을 지나가는 섹션 라벨 — 여러 섹션에서 재사용
+    function makeSectionDivider(label) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0 0;';
+        const mkLine = () => { const s = document.createElement('span'); s.style.cssText = 'flex:1;border-top:1px dotted var(--ws-border);opacity:0.55;'; return s; };
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'font-size:10px;color:var(--ws-text2);opacity:0.6;letter-spacing:0.02em;white-space:nowrap;';
+        lbl.textContent = label;
+        row.appendChild(mkLine()); row.appendChild(lbl); row.appendChild(mkLine());
+        body.appendChild(row);
+        return row;
+    }
+
+    // ─── 채팅 검색 — /find, /change에 항상 적용되는 전역 옵션들 ──────────────────
+    makeSectionDivider('채팅 검색');
+    const reasoningChk = makeRow('추론 블럭 항상 무시');
+    reasoningChk.checked = wsSettings.ignoreReasoningBlocks;
+    reasoningChk.addEventListener('change', () => { wsSettings.ignoreReasoningBlocks = reasoningChk.checked; saveWsSettings(); });
+
+    const translationChk = makeRow('번역문 우선');
+    translationChk.checked = wsSettings.translationSearchEnabled;
+    translationChk.addEventListener('change', () => { wsSettings.translationSearchEnabled = translationChk.checked; saveWsSettings(); });
+    // 켜져 있으면 /find, /change, 드래그 필의 🔎/🪄, 빠른 수정(연필)까지 전부 원문 대신
+    // msg.extra.display_text(번역문)를 우선 검색·치환함(없으면 원문으로 자동 폴백).
+
+    // ─── UI 검색 — 마스터 토글을 꺼두면 아래 3개는 회색으로 비활성화(체크만 남고 기능은 안 켜짐) ──
+    makeSectionDivider('UI 검색');
+    const uiSearchChk = makeRow('UI 검색 버튼 추가');
+    uiSearchChk.checked = wsSettings.uiSearchEnabled;
+
+    function makeIndentedRow(labelText) {
+        const lbl = document.createElement('label'); lbl.className = 'ws-label';
+        lbl.style.marginLeft = '14px';
+        const chk = document.createElement('input'); chk.type = 'checkbox'; chk.className = 'ws-check';
+        lbl.appendChild(chk); lbl.appendChild(document.createTextNode(labelText));
+        body.appendChild(lbl);
+        return { lbl, chk };
+    }
+
+    const subRows = [];
+    function makeTextboxRow(labelText, key) {
+        const { lbl, chk } = makeIndentedRow(labelText);
+        chk.checked = wsSettings.textboxSearch[key];
+        chk.addEventListener('change', () => {
+            wsSettings.textboxSearch[key] = chk.checked;
+            saveWsSettings();
+            refreshTextboxButtons();
+        });
+        subRows.push({ lbl, chk });
+    }
+    makeTextboxRow('사용자 정의 CSS', 'customCSS');
+    makeTextboxRow('캐릭터 설명', 'description');
+    makeTextboxRow('첫 번째 메시지', 'firstMessage');
+    // 대체 첫 메시지는 별도 팝업 레이어라 패널이 그 뒤에 가려서 포기 — 체크박스도 제거함
+
+    function updateSubRowsEnabled() {
+        const on = uiSearchChk.checked;
+        subRows.forEach(({ lbl, chk }) => {
+            chk.disabled = !on;
+            lbl.style.opacity = on ? '1' : '0.4';
+            lbl.style.cursor = on ? 'pointer' : 'not-allowed';
+        });
+    }
+    updateSubRowsEnabled();
+    uiSearchChk.addEventListener('change', () => {
+        wsSettings.uiSearchEnabled = uiSearchChk.checked;
+        saveWsSettings();
+        updateSubRowsEnabled();
+        refreshTextboxButtons();
+    });
+
+    // ─── 드래그 필 — '바꾸기'(마술봉)와 '빠른 수정'(지우개) 아이콘을 각각 독립적으로 끌 수 있음 ──
+    makeSectionDivider('드래그 필');
+    const pillWandChk = makeRow('바꾸기 끄기');
+    pillWandChk.checked = wsSettings.pillWandDisabled;
+    pillWandChk.addEventListener('change', () => { wsSettings.pillWandDisabled = pillWandChk.checked; saveWsSettings(); });
+
+    const pillEraserChk = makeRow('빠른 수정 끄기');
+    pillEraserChk.checked = wsSettings.pillEraserDisabled;
+    pillEraserChk.addEventListener('change', () => { wsSettings.pillEraserDisabled = pillEraserChk.checked; saveWsSettings(); });
+    // '번역 모드로 전환'은 스펙 확인 후 추가 예정
+
+    // ─── 하이라이트 ─────────────────────────────────────────────────────────
+    makeSectionDivider('하이라이트');
 
     // 라벨 속 "하이라이트" 글자만 실제 하이라이트 색으로 칠해서, 이 체크박스가 어떤
     // 하이라이트를 가리키는지(포커스=검정 / 일반=초록) 한눈에 구분되게 함

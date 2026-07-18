@@ -91,6 +91,20 @@ export function maskTags(raw) {
     return raw.replace(/<[^>]*>/g, m => '\u0000'.repeat(m.length));
 }
 
+// /clip, /word, 그리고 /find·/change의 "추론 블럭 항상 무시" 옵션이 공유하는 추론 블럭 태그 목록.
+const REASONING_WRAPPER_TAGS = ['think', 'thinking', 'CoT', 'starter'];
+
+// 추론 블럭(태그+내용 전부)을 같은 길이의 더미 문자(\u0000)로 치환 — maskTags와 같은 원리로
+// 원본 글자 오프셋은 그대로 유지한 채(치환/하이라이트 위치 계산이 안 어긋나게) 검색 대상에서만 제외.
+export function maskReasoningBlocks(raw) {
+    let text = raw;
+    for (const tag of REASONING_WRAPPER_TAGS) {
+        const re = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}\\s*>`, 'gi');
+        text = text.replace(re, m => '\u0000'.repeat(m.length));
+    }
+    return text;
+}
+
 // 단어 일치 — 앞뒤로 글자/숫자/밑줄(한글 포함, \p{L}\p{N}_)이 아닌 경계에서만 매치되도록 감쌈
 // 이 패턴을 쓰려면 정규식에 'u' 플래그가 반드시 있어야 함 (호출부에서 flags 구성 시 함께 추가)
 export function applyWholeWord(pattern, wholeWord) {
@@ -98,12 +112,19 @@ export function applyWholeWord(pattern, wholeWord) {
     return `(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])`;
 }
 
-export function buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord = false, ignoreTags = false, allowedIdxs = null) {
+// ignoreReasoning: 에딧모드의 "추론 블럭 항상 무시" 전역 토글 — 켜져 있으면 /find, /change 모두
+// 검색어 옵션(태그 무시 등)과 별개로 항상 추론 블럭 내용을 검색 대상에서 제외함.
+// getText: 기본은 msg.mes를 검색하지만, /find-trans·/change-trans처럼 다른 필드(번역문 등)를
+// 검색해야 할 때 (msg => 텍스트) 형태로 넘겨서 검색 대상 자체를 바꿀 수 있음.
+export function buildAllMatches(chat, escaped, flags, ignoreSpace, wholeWord = false, ignoreTags = false, allowedIdxs = null, ignoreReasoning = false, getText = null) {
     const re_esc = applyWholeWord(applyFiller(escaped, ignoreSpace), wholeWord), all = [];
     const allowedSet = allowedIdxs ? new Set(allowedIdxs) : null;
     chat.forEach((msg, msgIdx) => {
         if (allowedSet && !allowedSet.has(msgIdx)) return;
-        const searchText = ignoreTags ? maskTags(msg.mes) : msg.mes;
+        let searchText = getText ? getText(msg) : msg.mes;
+        if (searchText === undefined || searchText === null) return;
+        if (ignoreTags) searchText = maskTags(searchText);
+        if (ignoreReasoning) searchText = maskReasoningBlocks(searchText);
         let re_flags = flags.includes('g') ? flags : flags + 'g';
         if (wholeWord && !re_flags.includes('u')) re_flags += 'u';
         const re = new RegExp(re_esc, re_flags);
@@ -129,7 +150,6 @@ export function parseRangeInputFlexible(raw) {
 // word/clip 전용 — 메시지 안 "어디에" 있든 알려진 추론 블록 래퍼를 통째로(태그+내용 전부) 제거.
 // stripLeadingTagBlock과 달리 맨 앞뿐 아니라 전체를 훑고, 알려진 태그 이름만 대상으로 함
 // (임의의 아무 태그나 지우면 정상 서식용 HTML까지 날아갈 수 있어서 화이트리스트 방식으로 감).
-const REASONING_WRAPPER_TAGS = ['think', 'thinking', 'CoT', 'starter'];
 export function stripReasoningBlocks(raw) {
     let text = raw;
     for (const tag of REASONING_WRAPPER_TAGS) {

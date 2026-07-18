@@ -20,6 +20,41 @@ export async function editMessage(idx, newMes) {
     ctx.saveChatDebounced?.();
 }
 
+// 번역 확장이 msg.mes(원문)는 그대로 두고 msg.extra.display_text에 번역문을 저장해서 화면에
+// 그 번역문을 대신 그려주는 방식일 때 — /find, /change가 이 필드를 직접 읽고 쓰기 위한 헬퍼.
+// msg.extra 자체는 ST 코어가 제공하는 범용 저장공간이라 어떤 확장이든 아무 값이나 넣어둘 수 있어서
+// 그것만으로는 판별 근거가 안 됨 — 실제 번역문이 있는지는 항상 msg.extra.display_text 필드로
+// 구체적으로 확인함(cat-translator, magic-translation 등 여러 번역 확장이 공통으로 이
+// 필드명을 씀). DOM에 번역문 전용 클래스가 따로 없어도(=mes_text 그대로 재사용) 데이터 필드 자체가
+// 분리되어 있으므로 이쪽으로 검색/치환하면 원문을 안 건드리고 번역문만 바뀜.
+export async function editTranslatedText(idx, newText) {
+    const ctx = SillyTavern.getContext(), chat = getChat();
+    const msg = chat[idx];
+    if (!msg.extra) msg.extra = {};
+    msg.extra.display_text = newText;
+    // 확장이 스와이프별로 번역을 따로 캐시해두는 구조라, 있으면 그쪽도 같이 맞춰줌(없어도 무해)
+    if (msg.swipe_id !== undefined && msg.extra.swipe_translations?.[msg.swipe_id]) {
+        msg.extra.swipe_translations[msg.swipe_id].display_text = newText;
+    }
+    if (typeof ctx.updateMessageBlock === 'function') {
+        ctx.updateMessageBlock(idx, msg);
+    } else {
+        // 폴백 — 그 API가 없는 구버전에서도 최소한 화면 텍스트는 갱신되게
+        const el = document.querySelector(`#chat [mesid="${idx}"] .mes_text`);
+        if (el && ctx.messageFormatting) el.innerHTML = ctx.messageFormatting(newText, msg.name, msg.is_system, msg.is_user, idx);
+    }
+    ctx.saveChatDebounced?.();
+}
+
+// 에딧모드의 "번역문 우선" 토글에 따라, 이 메시지에서 검색/복사/요약 등에 쓸 "본문 텍스트"를
+// 하나로 통일해서 결정하는 공용 헬퍼 — /find, /change, /clip, /word, 드래그 필(📎/🔎/🪄) 등
+// 텍스트를 읽어야 하는 모든 곳이 이 함수 하나만 거치면 됨(중복 방지). 켜져 있으면 번역문이
+// 우선이고, 없으면 항상 원문으로 자동 폴백. 꺼져 있으면 그냥 항상 원문.
+export function getSearchableText(msg) {
+    if (!wsSettings.translationSearchEnabled) return msg.mes;
+    return msg.extra?.display_text ?? msg.mes;
+}
+
 // ── scroll helpers ──────────────────────────────────────────────────────────
 export function loadAndScrollTo(idx) {
     const el = document.querySelector(`[mesid="${idx}"]`);
@@ -60,9 +95,15 @@ export async function copyText(text) {
     else     toastr.error('Clipboard 접근이 거부되었습니다.', '', { timeOut:3000 });
 }
 
-export async function copyFullChat(stripText) {
+// getText 생략 시 기본은 원문(msg.mes) — /clip, 드래그 필 📎 등에서 "번역문 우선" 토글에 맞춰
+// getSearchableText를 넘기면 전체 채팅 복사도 번역문 우선으로 동작함.
+export async function copyFullChat(stripText, getText = null) {
     const chat = getChat(), ctx = SillyTavern.getContext(), lines = [];
-    for (const msg of chat) { if (!msg) continue; lines.push(`${msg.name||(msg.is_user?ctx.name1:ctx.name2)}: ${stripText(msg.mes)}`); }
+    for (const msg of chat) {
+        if (!msg) continue;
+        const raw = getText ? getText(msg) : msg.mes;
+        lines.push(`${msg.name||(msg.is_user?ctx.name1:ctx.name2)}: ${stripText(raw)}`);
+    }
     if (!lines.length) return;
     await copyText(lines.join('\n\n\n'));
 }
@@ -75,12 +116,23 @@ export const WS_DEFAULT_HL_RGB = '#b1e0b3', WS_DEFAULT_HL_ALPHA = 90; // 0~100
 // 포커스 하이라이트로 스크롤될 때 화면 상단에서 몇 %쯤 되는 위치에 멈출지(기존엔 12%로 고정돼있었음)
 export const WS_DEFAULT_HL_POSITION_PERCENT = 12;
 
+// 팝업 텍스트박스(사용자 정의 CSS/캐릭터 설명/첫 메시지) 찾기+바꾸기 버튼 — 3개 독립 on/off.
+// (대체 첫 메시지는 팝업이 별도 레이어라 패널을 못 띄워서 지원 포기함)
+function defaultTextboxSearch() {
+    return { customCSS: false, description: false, firstMessage: false };
+}
+
 function loadWsSettings() {
     // moveDisabled 기본값 true — 처음 설치 시 /move·/undo 가 함께 꺼져있는 상태로 시작
     const fallback = {
-        moveDisabled: true, pillDisabled: false, hlEnabled: false, hlRgb: WS_DEFAULT_HL_RGB, hlAlpha: WS_DEFAULT_HL_ALPHA,
+        moveDisabled: true, pillWandDisabled: false, pillEraserDisabled: false,
+        hlEnabled: false, hlRgb: WS_DEFAULT_HL_RGB, hlAlpha: WS_DEFAULT_HL_ALPHA,
         hlPositionEnabled: false, hlPositionPercent: WS_DEFAULT_HL_POSITION_PERCENT,
         enhancedDelete: false,
+        ignoreReasoningBlocks: false,
+        translationSearchEnabled: false,
+        uiSearchEnabled: false,
+        textboxSearch: defaultTextboxSearch(),
     };
     try {
         const raw = localStorage.getItem(WS_SETTINGS_KEY);
@@ -88,7 +140,10 @@ function loadWsSettings() {
         const parsed = JSON.parse(raw);
         return {
             moveDisabled: typeof parsed.moveDisabled === 'boolean' ? parsed.moveDisabled : true,
-            pillDisabled: !!parsed.pillDisabled,
+            // 예전 pillDisabled(단일 토글) 설정을 갖고 있던 사용자를 위해, 있으면 두 새 토글의
+            // 초기값으로 그대로 이어받음(마이그레이션) — 없으면 그냥 기본값(둘 다 꺼짐=둘 다 켜진 상태) 사용
+            pillWandDisabled: typeof parsed.pillWandDisabled === 'boolean' ? parsed.pillWandDisabled : !!parsed.pillDisabled,
+            pillEraserDisabled: typeof parsed.pillEraserDisabled === 'boolean' ? parsed.pillEraserDisabled : !!parsed.pillDisabled,
             hlEnabled: !!parsed.hlEnabled,
             hlRgb: typeof parsed.hlRgb === 'string' ? parsed.hlRgb : WS_DEFAULT_HL_RGB,
             hlAlpha: typeof parsed.hlAlpha === 'number' ? parsed.hlAlpha : WS_DEFAULT_HL_ALPHA,
@@ -96,6 +151,14 @@ function loadWsSettings() {
             hlPositionPercent: (typeof parsed.hlPositionPercent === 'number' && parsed.hlPositionPercent >= 0 && parsed.hlPositionPercent <= 100)
                 ? parsed.hlPositionPercent : WS_DEFAULT_HL_POSITION_PERCENT,
             enhancedDelete: !!parsed.enhancedDelete,
+            ignoreReasoningBlocks: !!parsed.ignoreReasoningBlocks,
+            translationSearchEnabled: !!parsed.translationSearchEnabled,
+            uiSearchEnabled: !!parsed.uiSearchEnabled,
+            textboxSearch: {
+                customCSS: !!parsed.textboxSearch?.customCSS,
+                description: !!parsed.textboxSearch?.description,
+                firstMessage: !!parsed.textboxSearch?.firstMessage,
+            },
         };
     } catch { return fallback; }
 }
