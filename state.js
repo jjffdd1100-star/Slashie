@@ -112,7 +112,7 @@ export async function copyFullChat(stripText, getText = null) {
 import { hexAlphaToRgba } from './utils.js';
 
 const WS_SETTINGS_KEY = 'ws-edit-settings';
-export const WS_DEFAULT_HL_RGB = '#b1e0b3', WS_DEFAULT_HL_ALPHA = 90; // 0~100
+const WS_DEFAULT_HL_RGB = '#b1e0b3', WS_DEFAULT_HL_ALPHA = 90; // 0~100
 // 포커스 하이라이트로 스크롤될 때 화면 상단에서 몇 %쯤 되는 위치에 멈출지(기존엔 12%로 고정돼있었음)
 export const WS_DEFAULT_HL_POSITION_PERCENT = 12;
 
@@ -120,6 +120,20 @@ export const WS_DEFAULT_HL_POSITION_PERCENT = 12;
 // (대체 첫 메시지는 팝업이 별도 레이어라 패널을 못 띄워서 지원 포기함)
 function defaultTextboxSearch() {
     return { customCSS: false, description: false, firstMessage: false };
+}
+
+// 스티키 노트 기본 색상/불투명도 — 형광 노란 포스트잇 느낌, 너무 진하지 않게
+const WS_DEFAULT_STICKY_RGB = '#FEF2B5', WS_DEFAULT_STICKY_ALPHA = 100; // 0~100
+
+// 스티키 노트 "내용(텍스트)"만 기기 간 동기화가 필요해서 settings.json에 따로 저장하고,
+// 위치/크기/스크롤/색상/열림 여부처럼 기기·화면마다 달라도 되는(오히려 같으면 불편한) 값들은
+// 여기 다른 설정들과 동일하게 기기별 localStorage에 둠 — 여러 기기를 쓰면 화면 비율이 달라
+// 위치·크기를 기기마다 따로 두고 싶을 수 있어서, 이 값들까지 동기화되면 오히려 불편함.
+function defaultStickyUI() {
+    return {
+        rgb: WS_DEFAULT_STICKY_RGB, alpha: WS_DEFAULT_STICKY_ALPHA,
+        left: null, top: null, width: null, height: null, scrollTop: 0, open: false,
+    };
 }
 
 function loadWsSettings() {
@@ -133,6 +147,7 @@ function loadWsSettings() {
         translationSearchEnabled: false,
         uiSearchEnabled: false,
         textboxSearch: defaultTextboxSearch(),
+        sticky: defaultStickyUI(),
     };
     try {
         const raw = localStorage.getItem(WS_SETTINGS_KEY);
@@ -159,6 +174,16 @@ function loadWsSettings() {
                 description: !!parsed.textboxSearch?.description,
                 firstMessage: !!parsed.textboxSearch?.firstMessage,
             },
+            sticky: {
+                rgb: typeof parsed.sticky?.rgb === 'string' ? parsed.sticky.rgb : WS_DEFAULT_STICKY_RGB,
+                alpha: typeof parsed.sticky?.alpha === 'number' ? parsed.sticky.alpha : WS_DEFAULT_STICKY_ALPHA,
+                left: typeof parsed.sticky?.left === 'number' ? parsed.sticky.left : null,
+                top: typeof parsed.sticky?.top === 'number' ? parsed.sticky.top : null,
+                width: typeof parsed.sticky?.width === 'number' ? parsed.sticky.width : null,
+                height: typeof parsed.sticky?.height === 'number' ? parsed.sticky.height : null,
+                scrollTop: typeof parsed.sticky?.scrollTop === 'number' ? parsed.sticky.scrollTop : 0,
+                open: !!parsed.sticky?.open,
+            },
         };
     } catch { return fallback; }
 }
@@ -170,7 +195,7 @@ export function saveWsSettings() {
     try { localStorage.setItem(WS_SETTINGS_KEY, JSON.stringify(wsSettings)); } catch {}
 }
 
-export const WS_DEFAULT_HL_COLOR = hexAlphaToRgba(WS_DEFAULT_HL_RGB, WS_DEFAULT_HL_ALPHA);
+const WS_DEFAULT_HL_COLOR = hexAlphaToRgba(WS_DEFAULT_HL_RGB, WS_DEFAULT_HL_ALPHA);
 
 export function applyWsHlColor() {
     const color = wsSettings.hlEnabled ? hexAlphaToRgba(wsSettings.hlRgb, wsSettings.hlAlpha) : WS_DEFAULT_HL_COLOR;

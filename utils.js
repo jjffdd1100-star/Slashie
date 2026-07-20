@@ -34,10 +34,15 @@ export function parseChangeRangeInput(raw) {
     return result;
 }
 
+// DOMParser 인스턴스를 매번 새로 안 만들고 재사용 — parseFromString은 호출마다 항상 새
+// Document를 돌려주므로 인스턴스를 공유해도 호출 간 상태가 섞이지 않아 안전함(싱글스레드).
+// /clip 전체 채팅 복사처럼 메시지 수백 개를 순회하며 반복 호출될 때 이득이 커짐.
+const _wsDOMParser = new DOMParser();
+
 export function stripText(html) {
     // <!--주석--> 은 별도로 지울 필요 없음 — DOM Comment 노드는 textContent에 애초에 포함 안 됨(스펙)
     const c = html.replace(/<style(\s[^>]*)?>[\s\S]*?<\/style>/gi, '');
-    return new DOMParser().parseFromString(c, 'text/html').body.textContent || '';
+    return _wsDOMParser.parseFromString(c, 'text/html').body.textContent || '';
 }
 
 export function escapeHTML(str) {

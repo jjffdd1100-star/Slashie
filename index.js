@@ -38,8 +38,10 @@ function injectThemeCSS() {
             --ws-delete-overlay: rgba(255,120,120,0.18);
             /* 드래그 필(검색 결과 위 뜨는 아이콘 묶음) 클릭 지점 대비 오프셋 — 커스텀 CSS로 조절 가능 */
             --ws-pill-offset-x: 20px; --ws-pill-offset-y: 70px;
-            /* 스티키 노트 기본 색(포스트잇 초록~연두) — 에딧모드 슬라이더로 조절 가능 */
-            --ws-sticky-color: rgba(212,247,168,0.85);
+            /* 스티키 노트 기본 색(포스트잇 노랑) — applyStickyColor()가 로드 시 항상 덮어쓰지만,
+               그 전 아주 짧은 순간의 폴백값도 실제 기본값과 맞춰둠 */
+            --ws-sticky-color: #FEF2B5;
+            --ws-sticky-opacity: 1;
         }
         .ws-btn { padding:5px 12px; border-radius:8px; border:1px solid var(--ws-border);
             background:#f4f4f4; color:var(--ws-text); cursor:pointer; font-size:13px;

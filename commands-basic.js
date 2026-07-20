@@ -14,8 +14,9 @@ import {
     getMoveSnapshot, setMoveSnapshot, raiseToTop,
 } from './state.js';
 import { createPanel, getPanelBody, makeDraggable, closePanel } from './panel-ui.js';
-import { refreshTextboxButtons } from './textbox-search.js';
-import { stickyData, applyStickyColor, persistSticky } from './sticky.js';
+import { refreshTextboxButtons, refreshTextboxObservers } from './textbox-search.js';
+import { stickyData, applyStickyColor, persistStickyUI } from './sticky.js';
+import { refreshEnhancedDeleteObserver } from './drag-features.js';
 
 // ─── 이동 엔진 (reload 없이 배열+DOM 직접 패치) ──────────────────────────────
 // 삭제 기능과 같은 철학: chat 배열은 splice로, 화면은 DOM 노드를 직접 옮기고
@@ -438,7 +439,12 @@ function openEditModePanel() {
 
     const delChk = makeRow("향상된 '메시지 삭제'");
     delChk.checked = wsSettings.enhancedDelete;
-    delChk.addEventListener('change', () => { wsSettings.enhancedDelete = delChk.checked; applyWsDeleteColor(); saveWsSettings(); });
+    delChk.addEventListener('change', () => {
+        wsSettings.enhancedDelete = delChk.checked;
+        applyWsDeleteColor();
+        saveWsSettings();
+        refreshEnhancedDeleteObserver();
+    });
 
     // /move 와 /undo 는 한 몸으로 묶어서 같이 끄고 켬 — /move 없이는 되돌릴 것도 없으므로
     const moveChk = makeRow('/move 끄기');
@@ -514,6 +520,7 @@ function openEditModePanel() {
         saveWsSettings();
         updateSubRowsEnabled();
         refreshTextboxButtons();
+        refreshTextboxObservers();
     });
 
     // ─── 드래그 필 — '바꾸기'(마술봉)와 '빠른 수정'(지우개) 아이콘을 각각 독립적으로 끌 수 있음 ──
@@ -614,8 +621,8 @@ function openEditModePanel() {
     // settings.json에 확정 저장 — 슬라이더를 움직이는 동안 매 프레임 저장을 걸지 않기 위함
     stickyColorInput.addEventListener('input', onStickyColorChange);
     stickyAlphaInput.addEventListener('input', onStickyColorChange);
-    stickyColorInput.addEventListener('change', () => persistSticky());
-    stickyAlphaInput.addEventListener('change', () => persistSticky());
+    stickyColorInput.addEventListener('change', () => persistStickyUI());
+    stickyAlphaInput.addEventListener('change', () => persistStickyUI());
     stickyRow.appendChild(stickyColorInput); stickyRow.appendChild(stickyAlphaInput);
     body.appendChild(stickyRow);
 
@@ -671,13 +678,13 @@ const restoreMacros = text => text
 const FEMPOV_MACRO_NOTE = `Note: the placeholders ${FEMPOV_USER_PLACEHOLDER} and ${FEMPOV_CHAR_PLACEHOLDER} represent the user's name and the character's name respectively — treat each grammatically as a person's name, and copy them through unchanged wherever they appear.`;
 
 const FEMPOV_RULES = `Rules:
-- This conversion is for a female user. The text may contain gender-neutral pronouns (they/their/them) referring to the character, and separately may also contain gender-neutral pronouns referring to the user — convert BOTH to she/her/hers wherever ambiguous, for whichever entity each pronoun instance actually refers to. Read context carefully so you never mix up which pronoun belongs to the character versus the user.
+- This conversion is for a female user. The text may contain gender-neutral pronouns (they/their/them) referring to the user — convert these to she/her/hers.
 - Beyond pronouns, make only the minimal edits needed where the surrounding context or wording specifically depends on gender (e.g. gendered nouns, idioms). Do not rewrite or rephrase anything else.
 - If the text describes the character's sexual orientation as bisexual/pansexual (often written that way just to accommodate a player of any gender), and nothing else in the text strongly implies genuine attraction to multiple genders once converted to FemPOV, change that description to heterosexual instead. Leave it as-is if there's clear, independent evidence of actual bi/pansexuality.
 - Preserve all original formatting exactly, including line breaks, markdown, punctuation, and any {{double-curly-brace}} placeholders.`;
 
 // 대체 인사말(단일 텍스트) 전용 시스템 프롬프트
-const FEMPOV_SYSTEM_PROMPT_SINGLE = `You will be given a character greeting message written from an AnyPOV (gender-neutral) perspective, using pronouns like "they/their/them" for the character. Rewrite it as FemPOV (female perspective).
+const FEMPOV_SYSTEM_PROMPT_SINGLE = `You will be given a character greeting message written from an AnyPOV (gender-neutral) perspective, using pronouns like "they/their/them" for the user. Rewrite it as FemPOV (female perspective).
 
 ${FEMPOV_MACRO_NOTE}
 
@@ -689,7 +696,7 @@ ${FEMPOV_RULES}
 // 입력에 쓴 것과 완전히 동일한 마커 줄을 출력에도 그대로 재현하게 시켜서 그 마커를 기준으로 파싱함.
 function buildFempovCombinedSystemPrompt(kindDescription, markers) {
     const markerList = markers.map(m => `"${m}"`).join(', ');
-    return `You will be given ${kindDescription}, written from an AnyPOV (gender-neutral) perspective using pronouns like "they/their/them" for the character. Convert each to FemPOV (female perspective).
+    return `You will be given ${kindDescription}, written from an AnyPOV (gender-neutral) perspective using pronouns like "they/their/them" for the user. Convert each to FemPOV (female perspective).
 
 ${FEMPOV_MACRO_NOTE}
 
@@ -730,6 +737,32 @@ function parseFempovSections(raw, markers) {
 // 항상 존재하므로 이 문제를 원천적으로 피함 — 단, 마지막으로 "저장된" 값만 읽어오고, 팝업에서
 // 아직 저장 안 한 실시간 수정 내용은 반영되지 않음.
 
+// API로 실제로 보내기 전에 한 번 확인받음 — 자주 API 안 바꾸고 실수로 보내는 걸 막기 위한
+// 안전망. ST 공식 Popup API를 씀. show.confirm()의 기본 버튼 문구("네"/"아니요")는 못 바꿔서,
+// 버튼 문구를 직접 지정할 수 있는 완전한 Popup 생성자 쪽으로 씀 — 그 생성자엔 별도 제목 인자가
+// 없어서 본문 HTML 맨 위에 소제목을 같이 넣음. 이 API 자체가 없는 구버전이면 window.confirm으로
+// 대체(그땐 버튼 문구를 못 바꾸지만 동작 자체는 그대로 됨).
+async function confirmFempovSend(ctx) {
+    const bodyHtml = '<div style="text-align:center;">'
+        + '<h3 style="margin:0 0 10px;">/FemPOV</h3>'
+        + '<p style="margin:0;">연결된 API 로 내용을 전송합니다.</p>'
+        + '</div>';
+    if (ctx.Popup && ctx.POPUP_TYPE?.CONFIRM) {
+        try {
+            const popup = new ctx.Popup(bodyHtml, ctx.POPUP_TYPE.CONFIRM, '', { okButton: '확인', cancelButton: '취소' });
+            const result = await popup.show();
+            return ctx.POPUP_RESULT ? result === ctx.POPUP_RESULT.AFFIRMATIVE : !!result;
+        } catch (err) {
+            console.error('[WS] /fempov confirm popup failed:', err);
+        }
+    }
+    if (ctx.Popup?.show?.confirm) {
+        const result = await ctx.Popup.show.confirm('/FemPOV', '연결된 API 로 내용을 전송합니다.');
+        return ctx.POPUP_RESULT ? result === ctx.POPUP_RESULT.AFFIRMATIVE : !!result;
+    }
+    return window.confirm('연결된 API 로 내용을 전송합니다.');
+}
+
 function registerFempovCommand() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'fempov', helpString: 'Convert Character Description + First Message to FemPOV using AI and apply the result directly. Usage: /fempov (description + first message, applied in place), /fempov 2 (alternate greeting #2), or /fempov 1-3 (alternate greetings #1 through #3) — greetings are placed in the chat input for review.',
@@ -754,6 +787,10 @@ function registerFempovCommand() {
                     .filter(({ text }) => text !== undefined && text !== null && String(text).trim());
                 if (!items.length) { toastr.warning('번호를 다시 확인해 주세요.', '', { timeOut:3000 }); return ''; }
 
+                // 내용이 비었는지(위에서) 먼저 다 확인한 뒤에만 팝업을 띄움 — 잘못된 번호로
+                // 실수했을 때 팝업부터 뜨고 나서야 "내용 없음" 토스트가 뜨는 게 불편해서 순서를 바꿈.
+                if (!(await confirmFempovSend(ctx))) return '';
+
                 // 번호 하나뿐이면 기존처럼 단일 텍스트를 그대로(헤더 없이) 입력창에 넣음.
                 if (items.length === 1) {
                     const original = items[0].text;
@@ -774,7 +811,7 @@ function registerFempovCommand() {
                     return '';
                 }
 
-                // 여러 번호("1-3" 등): 한 번에 같이 보내고, 결과를 "--- Alt Greeting #N ---"
+                // 여러 번호("1-3" 등): 한 번에 같이 보내고, 결과를 "===  Alt Greeting  #N  ==="
                 // 구분선과 함께 순서대로 입력창에 넣어서 사용자가 각각 복사해 붙여넣게 함.
                 const sections = items.map(({ n, text }) => ({ marker: FEMPOV_SECTION_GREETING(n), text }));
                 const systemPrompt = buildFempovCombinedSystemPrompt('one or more character greeting messages, each in its own section', sections.map(s => s.marker));
@@ -803,7 +840,7 @@ function registerFempovCommand() {
                 const displayParts = items
                     .map(({ n }) => {
                         const converted = parsed[FEMPOV_SECTION_GREETING(n)];
-                        return converted === undefined ? null : `--- Alt Greeting #${n} ---\n${restoreMacros(converted)}`;
+                        return converted === undefined ? null : `===  Alt Greeting  #${n}  ===\n${restoreMacros(converted)}`;
                     })
                     .filter(Boolean);
                 if (!displayParts.length || !sendTa) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
@@ -819,6 +856,7 @@ function registerFempovCommand() {
             const descText = descTa?.value ?? '';
             const msgText = msgTa?.value ?? '';
             if (!descText.trim() && !msgText.trim()) { toastr.warning('내용이 없습니다.', '', { timeOut:3000 }); return ''; }
+            if (!(await confirmFempovSend(ctx))) return '';
 
             const sections = [];
             if (descText.trim()) sections.push({ marker: FEMPOV_SECTION_DESC, text: descText });

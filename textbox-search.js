@@ -493,10 +493,54 @@ export function refreshTextboxButtons() {
     });
 }
 
+// document.body 전체를 subtree:true로 감시하던 예전 방식은 채팅 메시지가 쌓일 때마다(스트리밍
+// 아니어도 새 메시지 하나하나) 화면 어디서든 DOM이 바뀌면 무조건 콜백이 도는 문제가 있었음.
+// 실측해보니 customCSS는 "사용자 설정" 드로어(#user-settings-block) 안에, description/
+// firstMessage는 오른쪽 캐릭터 패널 드로어(#right-nav-panel) 안에 있어서, 이 두 컨테이너만
+// 감시하면 충분함 — #chat은 이 두 컨테이너 밖이라 애초에 감시 범위에서 빠짐(메시지가 아무리
+// 쌓여도 콜백이 안 돎).
+const OBSERVE_SELECTORS = ['#user-settings-block', '#right-nav-panel'];
+
+let _observers = [];
+let _retryTimers = [];
+
+function clearObservers() {
+    _observers.forEach(o => o.disconnect());
+    _observers = [];
+    _retryTimers.forEach(t => clearTimeout(t));
+    _retryTimers = [];
+}
+
+// 확장 초기화(또는 토글 켜는) 시점에 두 드로어가 아직 DOM에 안 붙어있을 수도 있어서(테마/로딩
+// 타이밍), 못 찾으면 잠깐 뒤에 재시도 — 최대 10초(500ms × 20회)까지만 시도하고 그 뒤엔 조용히 포기
+function tryAttach(selector, retriesLeft = 20) {
+    const el = document.querySelector(selector);
+    if (el) {
+        const obs = new MutationObserver(() => refreshTextboxButtons());
+        obs.observe(el, { childList: true, subtree: true });
+        _observers.push(obs);
+        return;
+    }
+    if (retriesLeft > 0) {
+        const t = setTimeout(() => tryAttach(selector, retriesLeft - 1), 500);
+        _retryTimers.push(t);
+    }
+}
+
+// "UI 검색" 마스터 토글이 꺼져있으면 관찰 자체를 아예 안 함(껐는데도 계속 도는 관찰자 자체가
+// 낭비라서) — 토글이 켜질 때만 붙이고, 꺼지면 바로 끊음. 에딧모드 패널의 토글 change 핸들러가
+// refreshTextboxButtons()와 함께 이 함수도 같이 호출해줌.
+export function refreshTextboxObservers() {
+    if (wsSettings.uiSearchEnabled) {
+        if (!_observers.length) OBSERVE_SELECTORS.forEach(sel => tryAttach(sel));
+    } else {
+        clearObservers();
+    }
+}
+
 export function initTextboxSearch() {
     if (window._wsTextboxSearch) window._wsTextboxSearch();
     refreshTextboxButtons();
-    const observer = new MutationObserver(() => refreshTextboxButtons());
-    observer.observe(document.body, { childList: true, subtree: true });
-    window._wsTextboxSearch = () => { observer.disconnect(); window._wsTextboxSearch = null; };
+    refreshTextboxObservers();
+    window._wsTextboxSearch = () => { clearObservers(); window._wsTextboxSearch = null; };
 }

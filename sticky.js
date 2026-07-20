@@ -1,18 +1,19 @@
 // ─── sticky.js ───────────────────────────────────────────────────────────────
 // /sticky — 항상 딱 1개만 존재하는 포스트잇 메모 패널.
 //
-// 다른 모든 설정(하이라이트 색, /move 끄기 등)은 기기별 localStorage(ws-edit-settings)에
-// 저장되지만, 이 메모는 "잃어버리면 안 되는 데이터"라는 성격이 강해서 SillyTavern의
-// extensionSettings(=settings.json, 서버에 저장되어 기기 간에도 유지됨)에 따로 저장함.
-// 텍스트, 위치/크기, 스크롤 위치, 색상/불투명도, 열림 상태까지 전부 이쪽에 포함.
+// 저장 위치를 둘로 나눔:
+//  - 텍스트(메모 내용)만 SillyTavern의 extensionSettings(=settings.json, 서버 저장이라
+//    기기 간에도 유지됨)에 둠 — "잃어버리면 안 되는 데이터"라 이쪽.
+//  - 위치/크기/스크롤/색상/열림 여부는 다른 설정들과 동일하게 기기별 localStorage
+//    (wsSettings.sticky, state.js)에 둠 — 기기마다 화면 비율이 달라 위치·크기를 따로
+//    두고 싶을 수 있어서, 이런 "화면에 종속적인 값"까지 동기화되면 오히려 불편함.
 
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '/scripts/slash-commands/SlashCommand.js';
-import { raiseToTop } from './state.js';
+import { raiseToTop, wsSettings, saveWsSettings } from './state.js';
 import { makeDraggable } from './panel-ui.js';
 
-const STORAGE_KEY = 'slashieSticky';
-export const WS_DEFAULT_STICKY_RGB = '#FEF2B5', WS_DEFAULT_STICKY_ALPHA = 85; // 0~100, 기본 노란색 포스트잇
+const STORAGE_KEY = 'slashieSticky'; // extensionSettings 쪽 — text 필드 하나만 씀
 
 // 모바일 가로화면보다 작게 — 큰 화면(태블릿/PC)용 별도 기본 크기는 지금은 안 나누고
 // 통일해서 씀 (필요하면 나중에 window.innerWidth 기준 분기 추가 가능)
@@ -20,47 +21,38 @@ const DEFAULT_W = 260, DEFAULT_H = 300;
 const MIN_W = 160, MIN_H = 140;
 const EDGE_MARGIN = 14;
 
-function defaultData() {
-    return {
-        text: '', open: false,
-        rgb: WS_DEFAULT_STICKY_RGB, alpha: WS_DEFAULT_STICKY_ALPHA,
-        left: null, top: null, width: DEFAULT_W, height: DEFAULT_H, scrollTop: 0,
-    };
-}
-
-function loadData() {
+function loadStickyText() {
     try {
-        const ctx = SillyTavern.getContext();
-        const raw = ctx.extensionSettings?.[STORAGE_KEY];
-        const d = defaultData();
-        if (!raw) return d;
-        return {
-            text: typeof raw.text === 'string' ? raw.text : d.text,
-            open: !!raw.open,
-            rgb: typeof raw.rgb === 'string' ? raw.rgb : d.rgb,
-            alpha: typeof raw.alpha === 'number' ? raw.alpha : d.alpha,
-            left: typeof raw.left === 'number' ? raw.left : d.left,
-            top: typeof raw.top === 'number' ? raw.top : d.top,
-            width: typeof raw.width === 'number' ? raw.width : d.width,
-            height: typeof raw.height === 'number' ? raw.height : d.height,
-            scrollTop: typeof raw.scrollTop === 'number' ? raw.scrollTop : d.scrollTop,
-        };
-    } catch { return defaultData(); }
+        const raw = SillyTavern.getContext().extensionSettings?.[STORAGE_KEY];
+        return typeof raw?.text === 'string' ? raw.text : '';
+    } catch { return ''; }
 }
 
-// 객체 참조 자체를 export — wsSettings와 동일한 패턴(다른 곳은 프로퍼티만 수정)
-export const stickyData = loadData();
+// stickyData는 두 저장소를 합친 하나의 메모리 상 뷰 — text는 extensionSettings에서,
+// 나머지는 wsSettings.sticky(localStorage)에서 채워짐. 어느 필드를 바꿨는지에 따라
+// persistStickyText() 또는 persistStickyUI() 중 맞는 쪽을 호출해서 그 저장소에만 반영함.
+export const stickyData = { text: loadStickyText(), ...wsSettings.sticky };
 
-export function persistSticky(immediate = false) {
+function persistStickyText(immediate = false) {
     try {
         const ctx = SillyTavern.getContext();
         if (!ctx.extensionSettings) return;
-        ctx.extensionSettings[STORAGE_KEY] = { ...stickyData };
+        ctx.extensionSettings[STORAGE_KEY] = { text: stickyData.text };
         ctx.saveSettingsDebounced?.();
         // "저장" 버튼 등 즉시 확정이 필요한 경우 — lodash debounce가 제공하는 flush()가
         // 있으면 그 자리에서 바로 실행시켜 디바운스 대기 없이 즉시 settings.json에 반영
         if (immediate) ctx.saveSettingsDebounced?.flush?.();
     } catch {}
+}
+
+export function persistStickyUI() {
+    Object.assign(wsSettings.sticky, {
+        rgb: stickyData.rgb, alpha: stickyData.alpha,
+        left: stickyData.left, top: stickyData.top,
+        width: stickyData.width, height: stickyData.height,
+        scrollTop: stickyData.scrollTop, open: stickyData.open,
+    });
+    saveWsSettings();
 }
 
 export function applyStickyColor() {
@@ -91,7 +83,7 @@ function closeStickyPanel(saveScroll = true) {
     if (!_panel) return;
     if (saveScroll && _textarea) stickyData.scrollTop = _textarea.scrollTop;
     stickyData.open = false;
-    persistSticky();
+    persistStickyUI();
     _panel.remove();
     _panel = null; _textarea = null;
 }
@@ -101,10 +93,11 @@ function deleteStickyData() {
     stickyData.text = '';
     stickyData.scrollTop = 0;
     if (_textarea) _textarea.value = '';
-    persistSticky(true);
+    persistStickyText(true);
+    persistStickyUI();
 }
 
-export function openStickyPanel() {
+function openStickyPanel() {
     if (_panel) { raiseToTop(_panel); return; }
     applyStickyColor();
 
@@ -130,7 +123,7 @@ export function openStickyPanel() {
     const closeBtn = buildIconBtn('fa-solid fa-xmark', '닫기');
     saveBtn.addEventListener('click', () => {
         stickyData.text = _textarea.value;
-        persistSticky(true);
+        persistStickyText(true);
         toastr.info('저장했습니다.', '', { timeOut:1500 });
     });
     trashBtn.addEventListener('click', () => deleteStickyData());
@@ -145,7 +138,7 @@ export function openStickyPanel() {
     textarea.autocomplete = 'off'; textarea.autocorrect = 'off'; textarea.autocapitalize = 'off'; textarea.spellcheck = false;
     // 사실상 무제한처럼 느껴지도록 브라우저가 허용하는 한도 안에서 가능한 한 넉넉하게 설정
     textarea.maxLength = 1000000;
-    textarea.addEventListener('input', () => { stickyData.text = textarea.value; persistSticky(); });
+    textarea.addEventListener('input', () => { stickyData.text = textarea.value; persistStickyText(); });
     panel.appendChild(textarea);
     requestAnimationFrame(() => { textarea.scrollTop = stickyData.scrollTop || 0; });
 
@@ -172,7 +165,7 @@ export function openStickyPanel() {
         if (!resizeDrag) return;
         resizeDrag = null;
         stickyData.width = panel.offsetWidth; stickyData.height = panel.offsetHeight;
-        persistSticky();
+        persistStickyUI();
     };
     handle.addEventListener('pointerup', endResize);
     handle.addEventListener('pointercancel', endResize);
@@ -189,14 +182,14 @@ export function openStickyPanel() {
         const g2 = clampGeometry(rect.left, rect.top, rect.width, rect.height);
         panel.style.left = `${g2.left}px`; panel.style.top = `${g2.top}px`;
         stickyData.left = g2.left; stickyData.top = g2.top;
-        persistSticky();
+        persistStickyUI();
     });
 
     stickyData.open = true;
-    persistSticky();
+    persistStickyUI();
 }
 
-export function toggleStickyPanel() {
+function toggleStickyPanel() {
     if (_panel) closeStickyPanel();
     else openStickyPanel();
 }

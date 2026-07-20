@@ -8,6 +8,25 @@ import { createPanel, getPanelBody, closePanel, inputBox, btn } from './panel-ui
 import { safeHighlight } from './highlight.js';
 import { runFind, runChange, openFindKeywordPanel, openChangeKeywordPanel } from './find-change.js';
 
+// "향상된 메시지 삭제" 버튼 주입용 관찰자 — 토글이 꺼져있으면 아예 관찰 자체를 안 하도록
+// (예전엔 설정과 무관하게 document.body 전체를 세션 내내 감시했음) 모듈 스코프에 둬서
+// 에딧모드 토글 change 핸들러에서 refreshEnhancedDeleteObserver()로 바로 켜고 끌 수 있게 함.
+let _delBtnObserver = null;
+// 버튼을 실제로 넣고 빼는 함수 자체도 참조해둠 — 관찰자를 끄면 그 뒤로 DOM 변화가 있어도
+// 콜백이 안 도니까, 토글이 꺼지는 바로 그 순간에 한 번은 직접 호출해서 이미 붙어있던 버튼을
+// 확실히 지워줘야 함(안 그러면 관찰자만 멈추고 버튼은 화면에 그대로 남아있는 문제가 생김).
+let _ensureDeleteExtraButtonsRef = null;
+export function refreshEnhancedDeleteObserver() {
+    if (!_delBtnObserver) return;
+    if (wsSettings.enhancedDelete) {
+        _delBtnObserver.observe(document.body, { childList: true, subtree: true });
+        _ensureDeleteExtraButtonsRef?.(); // 켜지는 순간 이미 삭제 다이얼로그가 열려있을 수도 있어서 즉시 한 번 시도
+    } else {
+        _delBtnObserver.disconnect();
+        _ensureDeleteExtraButtonsRef?.(); // 꺼지는 순간 붙어있던 버튼을 확실히 정리
+    }
+}
+
 // ─── 드래그-빠른수정(연필) — 드래그한 바로 그 위치 하나만 정확히 치환 ────────
 // 렌더링된 화면 텍스트로 "몇 번째 등장인지" 세는 방식은 메시지 안에 마크다운 서식
 // (*이탤릭*, **볼드** 등)이 섞여있으면 원본 텍스트와 글자 수/순서가 어긋나서 엉뚱한
@@ -452,9 +471,9 @@ function initEnhancedDelete() {
         }));
     }
 
-    const btnObserver = new MutationObserver(() => ensureDeleteExtraButtons());
-    btnObserver.observe(document.body, { childList: true, subtree: true });
-    ensureDeleteExtraButtons();
+    _delBtnObserver = new MutationObserver(() => ensureDeleteExtraButtons());
+    _ensureDeleteExtraButtonsRef = ensureDeleteExtraButtons;
+    refreshEnhancedDeleteObserver();
 
     const onMesClickCapture = e => {
         if (!wsSettings.enhancedDelete || !isDeleteModeActive()) return;
@@ -507,7 +526,9 @@ function initEnhancedDelete() {
         document.removeEventListener('click', onMesClickCapture, true);
         document.removeEventListener('click', onOkClickCapture, true);
         document.removeEventListener('click', onCancelPassive);
-        btnObserver.disconnect();
+        _delBtnObserver?.disconnect();
+        _delBtnObserver = null;
+        _ensureDeleteExtraButtonsRef = null;
         window._wsEnhancedDelete = null;
     };
 }
