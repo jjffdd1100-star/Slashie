@@ -1,6 +1,8 @@
 // ─── panel-ui.js ────────────────────────────────────────────────────────────
 // 드래그 가능한 패널, 버튼, 입력창 등 여러 기능이 공유하는 UI 빌더.
 
+import { raiseToTop, raiseToTopHigh } from './state.js';
+
 export function makeDraggable(panel, handle) {
     let drag = null;
     handle.addEventListener('pointerdown', e => {
@@ -18,19 +20,23 @@ export function makeDraggable(panel, handle) {
     handle.addEventListener('pointercancel', () => { drag = null; handle.style.cursor = 'grab'; });
 }
 
-export function createPanel(id, posCenter = null, onCloseX = null) {
+export function createPanel(id, posCenter = null, onCloseX = null, highPriority = false) {
     document.getElementById(id)?.remove();
+    const raise = highPriority ? raiseToTopHigh : raiseToTop;
     const panel = document.createElement('div'); panel.id = id;
+    // z-index는 여기서 고정값으로 박아두지 않음 — highPriority가 아닌 이상(=텍스트박스 검색
+    // 패널이 아닌 이상) 일반 계층(raiseToTop)을 써서 ST 자체 UI보다는 낮게, 그러면서도
+    // 서로 간엔 "마지막으로 탭한 패널"이 위로 오게 함.
     panel.style.cssText = `position:fixed;top:0;left:0;width:min(400px,92vw);max-height:88vh;
         display:flex;flex-direction:column;background:var(--ws-panel);color:var(--ws-text);
         border:1px solid var(--ws-border);border-radius:var(--ws-radius);overflow:hidden;
-        z-index:9999999!important;box-shadow:0 4px 16px rgba(0,0,0,0.06),0 8px 32px rgba(0,0,0,0.04);
+        box-shadow:0 4px 16px rgba(0,0,0,0.06),0 8px 32px rgba(0,0,0,0.04);
         font-size:13px;font-family:inherit;user-select:none;opacity:0;`;
     const handle = document.createElement('div');
     handle.style.cssText = `padding:8px 8px 8px 14px;background:var(--ws-panel3);cursor:grab;
         display:flex;align-items:center;justify-content:flex-end;touch-action:none;`;
     panel.appendChild(handle);
-    // 우상단 작은 닫기(X) 버튼 — /edit-mode와 동일한 크기/스타일
+    // 우상단 작은 닫기(X) 버튼 — /edit와 동일한 크기/스타일
     const closeXBtn = document.createElement('button'); closeXBtn.textContent = '✕';
     closeXBtn.style.cssText = `background:transparent;border:none;color:var(--ws-text2);
         font-size:13px;font-family:inherit;cursor:pointer;width:22px;height:22px;
@@ -52,6 +58,8 @@ export function createPanel(id, posCenter = null, onCloseX = null) {
     ['pointerdown', 'mousedown', 'click', 'touchstart'].forEach(evt => {
         panel.addEventListener(evt, e => e.stopPropagation());
     });
+    panel.addEventListener('pointerdown', () => raise(panel));
+    raise(panel);
 
     requestAnimationFrame(() => requestAnimationFrame(() => {
         const pw = panel.offsetWidth, ph = panel.offsetHeight;

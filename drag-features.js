@@ -1,7 +1,7 @@
 // ─── drag-features.js ───────────────────────────────────────────────────────
 // 드래그 선택 시 뜨는 검색/치환/빠른수정 필, QR 버튼 드래그 연동, 향상된 메시지 삭제.
 
-import { ESC_SPECIAL } from './utils.js';
+import { ESC_SPECIAL, smartInsertSpacing } from './utils.js';
 import { getChat, editMessage, editTranslatedText, getSearchableText, wsSettings, copyText, copyFullChat } from './state.js';
 import { stripText, stripReasoningBlocks } from './utils.js';
 import { createPanel, getPanelBody, closePanel, inputBox, btn } from './panel-ui.js';
@@ -92,15 +92,6 @@ function clearQuickReplaceHighlight() {
         while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
         p.removeChild(mark); p.normalize();
     });
-}
-
-// 삽입 지점 앞/뒤 공백 여부를 확인해서, 없을 때만 딱 한 칸 채워줌 — 문장 맨 끝/맨 앞이면
-// 그쪽엔 채울 대상 자체가 없으므로 반대쪽만 확인
-function smartInsertSpacing(fullText, insertPos, insertedText) {
-    const before = fullText[insertPos - 1], after = fullText[insertPos];
-    const left  = (before !== undefined && !/\s/.test(before)) ? ' ' : '';
-    const right = (after  !== undefined && !/\s/.test(after))  ? ' ' : '';
-    return fullText.slice(0, insertPos) + left + insertedText + right + fullText.slice(insertPos);
 }
 
 async function insertAtOffset(msgIdx, pos, text, field = 'mes') {
@@ -326,7 +317,7 @@ async function enhancedDeleteSelected() {
 
     const ctx = SillyTavern.getContext();
     if (typeof ctx.executeSlashCommandsWithOptions !== 'function') {
-        toastr.error('/cut 명령을 실행할 수 없습니다(이 버전에서 지원되지 않음).', '', { timeOut:4000 });
+        toastr.error('이 기능은 SillyTavern 최신 버전에서 사용할 수 있습니다.', '', { timeOut:4000 });
         return;
     }
 

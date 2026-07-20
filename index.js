@@ -21,6 +21,7 @@ import { registerBasicCommands } from './commands-basic.js';
 import { registerFindChangeCommands } from './find-change.js';
 import { initDragFeatures } from './drag-features.js';
 import { initTextboxSearch } from './textbox-search.js';
+import { initSticky } from './sticky.js';
 
 // ─── Panel CSS ────────────────────────────────────────────────────────────
 function injectThemeCSS() {
@@ -37,6 +38,8 @@ function injectThemeCSS() {
             --ws-delete-overlay: rgba(255,120,120,0.18);
             /* 드래그 필(검색 결과 위 뜨는 아이콘 묶음) 클릭 지점 대비 오프셋 — 커스텀 CSS로 조절 가능 */
             --ws-pill-offset-x: 20px; --ws-pill-offset-y: 70px;
+            /* 스티키 노트 기본 색(포스트잇 초록~연두) — 에딧모드 슬라이더로 조절 가능 */
+            --ws-sticky-color: rgba(212,247,168,0.85);
         }
         .ws-btn { padding:5px 12px; border-radius:8px; border:1px solid var(--ws-border);
             background:#f4f4f4; color:var(--ws-text); cursor:pointer; font-size:13px;
@@ -225,6 +228,93 @@ function injectThemeCSS() {
         .ws-tb-search-btn-char.ws-stitch-btn i {
             font-size: 11px;
         }
+
+        /* ── 스티키 노트(포스트잇) ──────────────────────────────────────────
+           z-index는 고정 우위를 두지 않고, 마지막으로 탭한 패널 쪽(에딧모드 vs 스티키)이
+           서로의 위로 올라오게 JS에서 그때그때 갱신함(둘 다 이 값 근처를 오르내림).
+           헤더를 별도 색 배경의 "바"로 분리하지 않고, 아이콘 3개만 투명한 드래그
+           영역 위에 떠 있게 해서 컨테이너+텍스트박스가 아니라 메모지 한 장처럼 보이게 함.
+           불투명도는 배경 rgba 하나에만 거는 게 아니라 패널 전체에 opacity를 걸어서
+           —배경/글씨/아이콘/테두리까지— 한 덩어리로 같이 옅어지게 함(--ws-sticky-opacity).
+           글꼴은 --ws-sticky-font 하나(CSS font 축약 속성)로 통일 — line-height, weight,
+           style까지 한 줄로 자유롭게 덮어쓸 수 있음.
+           :where()로 감싸서 이 기본값 선언 자체의 specificity를 0으로 만듦 — 그래서 사용자가
+           그냥 평범하게 "#ws-sticky-panel textarea { font-family: ...; }"라고만 써도(변수도,
+           !important도 필요 없이) 항상 그쪽이 이김. */
+        :where(#ws-sticky-panel textarea) {
+            font: 13px/1.5 inherit;
+        }
+        #ws-sticky-panel {
+            position: fixed;
+            background: var(--ws-sticky-color);
+            opacity: var(--ws-sticky-opacity, 1);
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 10px;
+            color: #3f3f3f;
+            overflow: hidden;
+        }
+        #ws-sticky-panel .ws-sticky-dragbar {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 2px;
+            padding: 0 5px;
+            cursor: grab;
+            touch-action: none;
+            box-sizing: border-box;
+            z-index: 1;
+        }
+        #ws-sticky-panel .ws-sticky-icon-btn,
+        #ws-sticky-panel .ws-sticky-icon-btn i {
+            color: rgba(63,63,63,0.35) !important;
+        }
+        #ws-sticky-panel .ws-sticky-icon-btn {
+            background: transparent;
+            border: none;
+            font-size: 12px;
+            cursor: pointer;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            padding: 0;
+            flex-shrink: 0;
+        }
+        #ws-sticky-panel .ws-sticky-icon-btn:hover,
+        #ws-sticky-panel .ws-sticky-icon-btn:hover i {
+            background: rgba(0,0,0,0.07);
+            color: rgba(63,63,63,0.9) !important;
+        }
+        #ws-sticky-panel textarea {
+            position: absolute;
+            inset: 0;
+            resize: none;
+            border: none !important;
+            outline: none;
+            background: transparent !important;
+            color: inherit;
+            padding: 32px 14px 14px;
+            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+        }
+        #ws-sticky-panel .ws-sticky-resize-handle {
+            position: absolute;
+            right: 2px;
+            bottom: 2px;
+            width: 16px;
+            height: 16px;
+            cursor: nwse-resize;
+            touch-action: none;
+            opacity: 0.35;
+            z-index: 1;
+        }
+        #ws-sticky-panel .ws-sticky-resize-handle svg { display: block; width: 100%; height: 100%; }
     `;
     document.head.appendChild(s);
 }
@@ -239,4 +329,5 @@ function injectThemeCSS() {
     registerFindChangeCommands();
     initDragFeatures();
     initTextboxSearch();
+    await initSticky();
 })();

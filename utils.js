@@ -94,15 +94,23 @@ export function maskTags(raw) {
 // /clip, /word, 그리고 /find·/change의 "추론 블럭 항상 무시" 옵션이 공유하는 추론 블럭 태그 목록.
 const REASONING_WRAPPER_TAGS = ['think', 'thinking', 'CoT', 'starter'];
 
-// 추론 블럭(태그+내용 전부)을 같은 길이의 더미 문자(\u0000)로 치환 — maskTags와 같은 원리로
-// 원본 글자 오프셋은 그대로 유지한 채(치환/하이라이트 위치 계산이 안 어긋나게) 검색 대상에서만 제외.
-export function maskReasoningBlocks(raw) {
+// 위 태그 목록을 훑으면서 각 블록(태그+내용 전부)을 콜백이 정한 대로 치환 — maskReasoningBlocks와
+// stripReasoningBlocks가 "찾는 방식"은 완전히 같고 "찾은 뒤 뭘로 바꿀지"만 다르므로, 정규식
+// 생성/순회 로직을 여기 하나로 모아서 중복을 없앰.
+function replaceReasoningBlocks(raw, replacer) {
     let text = raw;
     for (const tag of REASONING_WRAPPER_TAGS) {
         const re = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}\\s*>`, 'gi');
-        text = text.replace(re, m => '\u0000'.repeat(m.length));
+        text = text.replace(re, replacer);
     }
     return text;
+}
+
+// 추론 블럭(태그+내용 전부)을 같은 길이의 더미 문자(\u0000)로 치환 — 원본 글자 오프셋은 그대로
+// 유지한 채(치환/하이라이트 위치 계산이 안 어긋나게) 검색 대상에서만 제외. /find, /change 전용
+// ("추론 블럭 항상 무시" 토글이 켜졌을 때만 사용).
+export function maskReasoningBlocks(raw) {
+    return replaceReasoningBlocks(raw, m => '\u0000'.repeat(m.length));
 }
 
 // 단어 일치 — 앞뒤로 글자/숫자/밑줄(한글 포함, \p{L}\p{N}_)이 아닌 경계에서만 매치되도록 감쌈
@@ -148,15 +156,12 @@ export function parseRangeInputFlexible(raw) {
 }
 
 // word/clip 전용 — 메시지 안 "어디에" 있든 알려진 추론 블록 래퍼를 통째로(태그+내용 전부) 제거.
-// stripLeadingTagBlock과 달리 맨 앞뿐 아니라 전체를 훑고, 알려진 태그 이름만 대상으로 함
-// (임의의 아무 태그나 지우면 정상 서식용 HTML까지 날아갈 수 있어서 화이트리스트 방식으로 감).
+// 에딧모드의 "추론 블럭 항상 무시" 토글과는 무관하게 /clip, /word에서는 항상 적용됨(추론 내용이
+// 복사/글자수 계산에 섞이면 안 되니까). stripLeadingTagBlock과 달리 맨 앞뿐 아니라 전체를 훑고,
+// 알려진 태그 이름만 대상으로 함(임의의 아무 태그나 지우면 정상 서식용 HTML까지 날아갈 수 있어서
+// 화이트리스트 방식으로 감).
 export function stripReasoningBlocks(raw) {
-    let text = raw;
-    for (const tag of REASONING_WRAPPER_TAGS) {
-        const re = new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}\\s*>`, 'gi');
-        text = text.replace(re, '');
-    }
-    return text;
+    return replaceReasoningBlocks(raw, () => '');
 }
 
 // hidden 패널 미리보기용 — 메시지 맨 앞의 <tag>...</tag> 추론 블록 전체(태그 포함)를 제거.

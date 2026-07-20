@@ -1,6 +1,6 @@
 // ─── commands-basic.js ──────────────────────────────────────────────────────
 // /collapse /expand /up /down /goto /message-button /message-bottom /message-mb
-// /move /undo /clip /word /hidden /edit-mode
+// /move /undo /clip /word /hidden /edit /fempov
 
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '/scripts/slash-commands/SlashCommand.js';
@@ -11,10 +11,11 @@ import {
     SUMMARY, getChat, editMessage,
     loadAndScrollTo, copyText, copyFullChat, getSearchableText,
     wsSettings, saveWsSettings, applyWsHlColor, applyWsDeleteColor, WS_DEFAULT_HL_POSITION_PERCENT,
-    getMoveSnapshot, setMoveSnapshot,
+    getMoveSnapshot, setMoveSnapshot, raiseToTop,
 } from './state.js';
 import { createPanel, getPanelBody, makeDraggable, closePanel } from './panel-ui.js';
 import { refreshTextboxButtons } from './textbox-search.js';
+import { stickyData, applyStickyColor, persistSticky } from './sticky.js';
 
 // ─── 이동 엔진 (reload 없이 배열+DOM 직접 패치) ──────────────────────────────
 // 삭제 기능과 같은 철학: chat 배열은 splice로, 화면은 DOM 노드를 직접 옮기고
@@ -383,10 +384,11 @@ export function registerBasicCommands() {
         },
     }));
 
+    registerFempovCommand();
     registerEditModeCommand();
 }
 
-// ─── /edit-mode ─────────────────────────────────────────────────────────────
+// ─── /edit ──────────────────────────────────────────────────────────────────
 // 왼쪽 사이드, find 첫 패널(createPanel 기본 위치)과 같은 y값에 고정으로 뜨는 패널
 function closeEditModePanel() { document.getElementById('ws-editmode-panel')?.remove(); }
 
@@ -394,7 +396,7 @@ function openEditModePanel() {
     closeEditModePanel();
     const panel = document.createElement('div'); panel.id = 'ws-editmode-panel';
     panel.style.cssText = `position:fixed;left:14px;top:0;
-        z-index:9999999!important;background:var(--ws-panel);color:var(--ws-text);
+        background:var(--ws-panel);color:var(--ws-text);
         border:1px solid var(--ws-border);border-radius:var(--ws-radius);
         box-shadow:0 4px 16px rgba(0,0,0,0.06),0 8px 32px rgba(0,0,0,0.04);
         display:flex;flex-direction:column;max-height:82vh;
@@ -406,6 +408,7 @@ function openEditModePanel() {
     ['pointerdown', 'mousedown', 'click', 'touchstart'].forEach(evt => {
         panel.addEventListener(evt, e => e.stopPropagation());
     });
+    panel.addEventListener('pointerdown', () => raiseToTop(panel));
 
     // 헤더 — 잡고 움직일 수 있는 드래그 핸들 + 우상단 작은 닫기(X) 버튼
     const header = document.createElement('div');
@@ -593,7 +596,31 @@ function openEditModePanel() {
     rgbaRow.appendChild(colorInput); rgbaRow.appendChild(alphaInput);
     body.appendChild(rgbaRow);
 
+    // ─── 스티키 노트 ────────────────────────────────────────────────────────
+    makeSectionDivider('스티키 노트');
+    const stickyRow = document.createElement('div');
+    stickyRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    const stickyColorInput = document.createElement('input'); stickyColorInput.type = 'color';
+    stickyColorInput.value = stickyData.rgb;
+    stickyColorInput.style.cssText = 'width:26px;height:20px;padding:0;border:1px solid var(--ws-border);border-radius:4px;cursor:pointer;flex-shrink:0;';
+    const stickyAlphaInput = document.createElement('input'); stickyAlphaInput.type = 'range'; stickyAlphaInput.min = '0'; stickyAlphaInput.max = '100';
+    stickyAlphaInput.value = String(stickyData.alpha);
+    stickyAlphaInput.style.cssText = 'flex:1;';
+    const onStickyColorChange = () => {
+        stickyData.rgb = stickyColorInput.value; stickyData.alpha = parseInt(stickyAlphaInput.value, 10);
+        applyStickyColor();
+    };
+    // 색상은 조작 중엔 applyStickyColor()로 화면만 즉시 갱신하고, 손을 뗀(change) 시점에만
+    // settings.json에 확정 저장 — 슬라이더를 움직이는 동안 매 프레임 저장을 걸지 않기 위함
+    stickyColorInput.addEventListener('input', onStickyColorChange);
+    stickyAlphaInput.addEventListener('input', onStickyColorChange);
+    stickyColorInput.addEventListener('change', () => persistSticky());
+    stickyAlphaInput.addEventListener('change', () => persistSticky());
+    stickyRow.appendChild(stickyColorInput); stickyRow.appendChild(stickyAlphaInput);
+    body.appendChild(stickyRow);
+
     document.body.appendChild(panel);
+    raiseToTop(panel);
     requestAnimationFrame(() => requestAnimationFrame(() => {
         const ph = panel.offsetHeight;
         // find 첫 패널(createPanel 기본 위치)과 정확히 같은 y값
@@ -605,10 +632,235 @@ function openEditModePanel() {
 
 function registerEditModeCommand() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'edit-mode', helpString: 'Toggle the edit-mode panel (disable /move, disable drag pill, change highlight color).',
+        name: 'edit', helpString: 'Toggle the edit panel (disable /move, disable drag pill, change highlight color, sticky note color).',
         callback: () => {
             if (document.getElementById('ws-editmode-panel')) closeEditModePanel();
             else openEditModePanel();
+            return '';
+        },
+    }));
+}
+
+// ─── /fempov ─────────────────────────────────────────────────────────────
+// AnyPOV(they/their/them 등 중립 대명사) 그리팅을 FemPOV로 자연스럽게 변환.
+// generateRaw()로 채팅 기록/캐릭터 카드/프리셋 없이 이 지시문+원문만 딱 모델에 보냄(토큰 절약,
+// 맥락 오염 없음).
+//
+// /fempov      → 캐릭터 설명 + 첫 번째 메시지를 한 번에 보내서 변환하고, 결과를 각각 원래
+//                textarea에 바로 덮어씀(미리보기 없음 — 두 필드 다 있는 만큼 입력창 하나로
+//                검토하기 번거로워서 곧바로 반영하는 쪽을 택함).
+// /fempov 1, 2, 3, ... → 대체 인사말(화면에 보이는 번호 그대로, 1부터 시작) 하나만 변환해서
+//                #send_textarea(입력창)에 넣고 사용자가 검토 후 직접 붙여넣게 함 — 대체
+//                인사말은 원래 위치가 별도 팝업이라 "바로 덮어쓰기"가 애매해서 기존 방식 유지.
+//
+// {{user}}, {{char}} 처리: generateRaw()는 내부적으로 프롬프트를 실제 API에 보내기 직전에
+// 매크로를 치환해버려서(우리가 손 쓸 수 없는 타이밍), 원문을 그대로 보내면 이미 사용자
+// 페르소나 이름/캐릭터 이름으로 바뀐 채 전송됨
+// → 보내기 전에 둘 다 눈에 띄는 placeholder로 바꿔치기했다가, 결과를 받은 뒤 다시 원래
+// 매크로 문법으로 되돌리는 방식으로 우회 — 실제 이름을 알아내서 대신 채워넣는 방식보다
+// 훨씬 간단하고, 결과물에도 매크로 문법이 그대로 남아 캐릭터가 바뀌어도 안전함.
+const FEMPOV_USER_PLACEHOLDER = '@@USERNAME@@';
+const FEMPOV_CHAR_PLACEHOLDER = '@@CHARNAME@@';
+const protectMacros = text => text
+    .replace(/\{\{user\}\}/gi, FEMPOV_USER_PLACEHOLDER)
+    .replace(/\{\{char\}\}/gi, FEMPOV_CHAR_PLACEHOLDER);
+const restoreMacros = text => text
+    .split(FEMPOV_USER_PLACEHOLDER).join('{{user}}')
+    .split(FEMPOV_CHAR_PLACEHOLDER).join('{{char}}');
+
+const FEMPOV_MACRO_NOTE = `Note: the placeholders ${FEMPOV_USER_PLACEHOLDER} and ${FEMPOV_CHAR_PLACEHOLDER} represent the user's name and the character's name respectively — treat each grammatically as a person's name, and copy them through unchanged wherever they appear.`;
+
+const FEMPOV_RULES = `Rules:
+- This conversion is for a female user. The text may contain gender-neutral pronouns (they/their/them) referring to the character, and separately may also contain gender-neutral pronouns referring to the user — convert BOTH to she/her/hers wherever ambiguous, for whichever entity each pronoun instance actually refers to. Read context carefully so you never mix up which pronoun belongs to the character versus the user.
+- Beyond pronouns, make only the minimal edits needed where the surrounding context or wording specifically depends on gender (e.g. gendered nouns, idioms). Do not rewrite or rephrase anything else.
+- If the text describes the character's sexual orientation as bisexual/pansexual (often written that way just to accommodate a player of any gender), and nothing else in the text strongly implies genuine attraction to multiple genders once converted to FemPOV, change that description to heterosexual instead. Leave it as-is if there's clear, independent evidence of actual bi/pansexuality.
+- Preserve all original formatting exactly, including line breaks, markdown, punctuation, and any {{double-curly-brace}} placeholders.`;
+
+// 대체 인사말(단일 텍스트) 전용 시스템 프롬프트
+const FEMPOV_SYSTEM_PROMPT_SINGLE = `You will be given a character greeting message written from an AnyPOV (gender-neutral) perspective, using pronouns like "they/their/them" for the character. Rewrite it as FemPOV (female perspective).
+
+${FEMPOV_MACRO_NOTE}
+
+${FEMPOV_RULES}
+- Output ONLY the converted text. No preamble, no explanation, no quotation marks around the output.`;
+
+// 캐릭터 설명 + 첫 번째 메시지, 또는 대체 인사말 여러 개를 한 번에 보낼 때 공용으로 쓰는
+// "마커로 구분된 다중 섹션" 시스템 프롬프트. 응답을 다시 필드별로 정확히 나눠 담아야 하므로,
+// 입력에 쓴 것과 완전히 동일한 마커 줄을 출력에도 그대로 재현하게 시켜서 그 마커를 기준으로 파싱함.
+function buildFempovCombinedSystemPrompt(kindDescription, markers) {
+    const markerList = markers.map(m => `"${m}"`).join(', ');
+    return `You will be given ${kindDescription}, written from an AnyPOV (gender-neutral) perspective using pronouns like "they/their/them" for the character. Convert each to FemPOV (female perspective).
+
+${FEMPOV_MACRO_NOTE}
+
+${FEMPOV_RULES}
+- The input is divided into sections, each starting with a line that is exactly one of these markers: ${markerList}. Only sections present in the input should appear in your output.
+- Reproduce the exact same marker line(s) in your output, each immediately followed by that section's converted text and nothing else. Do not add any other text, headers, or explanation.`;
+}
+
+const FEMPOV_SECTION_DESC = '===FEMPOV_DESCRIPTION===';
+const FEMPOV_SECTION_MSG  = '===FEMPOV_FIRST_MESSAGE===';
+const FEMPOV_SECTION_GREETING = n => `===FEMPOV_GREETING_${n}===`;
+
+// 텍스트를 "마커\n내용" 형태로 이어붙임 — generateRaw에 보낼 하나의 prompt를 구성.
+function buildFempovSections(sections) {
+    return sections.map(s => `${s.marker}\n${protectMacros(s.text)}`).join('\n\n');
+}
+
+// 위 마커들을 기준으로 응답을 다시 섹션별로 나눔. 마커를 하나도 못 찾으면 null(파싱 실패로 간주).
+function parseFempovSections(raw, markers) {
+    const found = markers
+        .map(m => ({ m, idx: raw.indexOf(m) }))
+        .filter(x => x.idx !== -1)
+        .sort((a, b) => a.idx - b.idx);
+    if (!found.length) return null;
+    const result = {};
+    for (let i = 0; i < found.length; i++) {
+        const start = found[i].idx + found[i].m.length;
+        const end = i + 1 < found.length ? found[i + 1].idx : raw.length;
+        result[found[i].m] = raw.slice(start, end).trim();
+    }
+    return result;
+}
+
+// 대체 인사말은 DOM이 아니라 캐릭터 데이터(alternate_greetings 배열)에서 직접 읽음 — 대체
+// 인사말 편집 팝업은 다른 곳(채팅 입력창 등)을 클릭하면 "바깥 클릭"으로 감지되어 자동으로
+// 닫히면서 그 안의 textarea들이 DOM에서 통째로 사라지는데, 명령어 실행 시점엔 이미 팝업이
+// 닫혀있는 경우가 많아 DOM 방식으로는 항상 값을 놓쳤음. 캐릭터 데이터는 팝업 상태와 무관하게
+// 항상 존재하므로 이 문제를 원천적으로 피함 — 단, 마지막으로 "저장된" 값만 읽어오고, 팝업에서
+// 아직 저장 안 한 실시간 수정 내용은 반영되지 않음.
+
+function registerFempovCommand() {
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'fempov', helpString: 'Convert Character Description + First Message to FemPOV using AI and apply the result directly. Usage: /fempov (description + first message, applied in place), /fempov 2 (alternate greeting #2), or /fempov 1-3 (alternate greetings #1 through #3) — greetings are placed in the chat input for review.',
+        unnamedArgumentList: [SlashCommandArgument.fromProps({ description:'Alternate greeting number or range, e.g. 2 or 1-3 (omit to convert description + first message)', typeList:[ARGUMENT_TYPE.STRING], isRequired:false })],
+        callback: async (_a, value) => {
+            const trimmed = String(value ?? '').trim();
+            const ctx = SillyTavern.getContext();
+            if (typeof ctx.generateRaw !== 'function') {
+                toastr.error('이 기능은 SillyTavern 최신 버전에서 사용할 수 있습니다.', '', { timeOut:4000 });
+                return '';
+            }
+
+            // ─── 대체 인사말(하나 또는 범위): 기존처럼 입력창 미리보기 ─────────────
+            if (trimmed) {
+                const idxs = parseRange(trimmed);
+                if (!idxs) { toastr.warning('번호를 다시 확인해 주세요.', '', { timeOut:3000 }); return ''; }
+
+                const char = ctx.characters?.[ctx.characterId];
+                const greetings = char?.data?.alternate_greetings ?? char?.alternate_greetings ?? [];
+                const items = idxs
+                    .map(n => ({ n, text: greetings[n - 1] }))
+                    .filter(({ text }) => text !== undefined && text !== null && String(text).trim());
+                if (!items.length) { toastr.warning('번호를 다시 확인해 주세요.', '', { timeOut:3000 }); return ''; }
+
+                // 번호 하나뿐이면 기존처럼 단일 텍스트를 그대로(헤더 없이) 입력창에 넣음.
+                if (items.length === 1) {
+                    const original = items[0].text;
+                    let result;
+                    try {
+                        result = await ctx.generateRaw({ systemPrompt: FEMPOV_SYSTEM_PROMPT_SINGLE, prompt: protectMacros(original) });
+                    } catch (err) {
+                        console.error('[WS] /fempov generateRaw failed:', err);
+                        result = null;
+                    }
+                    if (!result || !result.trim()) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
+
+                    const sendTa = document.querySelector('#send_textarea');
+                    if (!sendTa) return '';
+                    sendTa.value = restoreMacros(result.trim());
+                    sendTa.dispatchEvent(new Event('input', { bubbles: true }));
+                    sendTa.focus();
+                    return '';
+                }
+
+                // 여러 번호("1-3" 등): 한 번에 같이 보내고, 결과를 "--- Alt Greeting #N ---"
+                // 구분선과 함께 순서대로 입력창에 넣어서 사용자가 각각 복사해 붙여넣게 함.
+                const sections = items.map(({ n, text }) => ({ marker: FEMPOV_SECTION_GREETING(n), text }));
+                const systemPrompt = buildFempovCombinedSystemPrompt('one or more character greeting messages, each in its own section', sections.map(s => s.marker));
+
+                let result;
+                try {
+                    result = await ctx.generateRaw({ systemPrompt, prompt: buildFempovSections(sections) });
+                } catch (err) {
+                    console.error('[WS] /fempov generateRaw failed:', err);
+                    result = null;
+                }
+                if (!result || !result.trim()) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
+
+                const parsed = parseFempovSections(result, sections.map(s => s.marker));
+                const sendTa = document.querySelector('#send_textarea');
+                if (!parsed) {
+                    if (sendTa) {
+                        sendTa.value = restoreMacros(result.trim());
+                        sendTa.dispatchEvent(new Event('input', { bubbles: true }));
+                        sendTa.focus();
+                    }
+                    toastr.warning('결과를 입력창으로 전송합니다.', '', { timeOut:4000 });
+                    return '';
+                }
+
+                const displayParts = items
+                    .map(({ n }) => {
+                        const converted = parsed[FEMPOV_SECTION_GREETING(n)];
+                        return converted === undefined ? null : `--- Alt Greeting #${n} ---\n${restoreMacros(converted)}`;
+                    })
+                    .filter(Boolean);
+                if (!displayParts.length || !sendTa) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
+                sendTa.value = displayParts.join('\n\n');
+                sendTa.dispatchEvent(new Event('input', { bubbles: true }));
+                sendTa.focus();
+                return '';
+            }
+
+            // ─── 캐릭터 설명 + 첫 번째 메시지: 한 번에 보내고 원위치에 바로 반영 ──────
+            const descTa = document.querySelector('#description_textarea');
+            const msgTa = document.querySelector('#firstmessage_textarea');
+            const descText = descTa?.value ?? '';
+            const msgText = msgTa?.value ?? '';
+            if (!descText.trim() && !msgText.trim()) { toastr.warning('내용이 없습니다.', '', { timeOut:3000 }); return ''; }
+
+            const sections = [];
+            if (descText.trim()) sections.push({ marker: FEMPOV_SECTION_DESC, text: descText });
+            if (msgText.trim())  sections.push({ marker: FEMPOV_SECTION_MSG,  text: msgText  });
+            const systemPrompt = buildFempovCombinedSystemPrompt("a character's description and/or first message", sections.map(s => s.marker));
+
+            let result;
+            try {
+                result = await ctx.generateRaw({ systemPrompt, prompt: buildFempovSections(sections) });
+            } catch (err) {
+                console.error('[WS] /fempov generateRaw failed:', err);
+                result = null;
+            }
+            if (!result || !result.trim()) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
+
+            const parsed = parseFempovSections(result, sections.map(s => s.marker));
+            if (!parsed) {
+                // 마커를 못 찾으면(모델이 형식을 안 지킨 경우) 잘못된 내용으로 원본을 덮어쓰지
+                // 않도록, 대신 입력창에 그대로 넣어 사용자가 직접 판단하게 함.
+                const sendTa = document.querySelector('#send_textarea');
+                if (sendTa) {
+                    sendTa.value = restoreMacros(result.trim());
+                    sendTa.dispatchEvent(new Event('input', { bubbles: true }));
+                    sendTa.focus();
+                }
+                toastr.warning('결과를 입력창으로 전송합니다.', '', { timeOut:4000 });
+                return '';
+            }
+
+            let updatedCount = 0;
+            if (parsed[FEMPOV_SECTION_DESC] !== undefined && descTa) {
+                descTa.value = restoreMacros(parsed[FEMPOV_SECTION_DESC]);
+                descTa.dispatchEvent(new Event('input', { bubbles: true }));
+                updatedCount++;
+            }
+            if (parsed[FEMPOV_SECTION_MSG] !== undefined && msgTa) {
+                msgTa.value = restoreMacros(parsed[FEMPOV_SECTION_MSG]);
+                msgTa.dispatchEvent(new Event('input', { bubbles: true }));
+                updatedCount++;
+            }
+            if (!updatedCount) { toastr.error('응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요.', '', { timeOut:4000 }); return ''; }
+            toastr.success(`${updatedCount}개 항목이 변경되었습니다.`, '', { timeOut:3000 });
             return '';
         },
     }));

@@ -194,7 +194,7 @@ function toggleTextboxPanel(group, el) {
 }
 
 function openTextboxKeywordPanel(group, anchorEl) {
-    const panel = createPanel(PANEL_ID, centerOf(anchorEl), () => { closePanel(PANEL_ID); _tbCloseFn = null; });
+    const panel = createPanel(PANEL_ID, centerOf(anchorEl), () => { closePanel(PANEL_ID); _tbCloseFn = null; }, true);
     _tbCloseFn = () => { closePanel(PANEL_ID); _tbCloseFn = null; };
     const body = getPanelBody(panel);
     const input = inputBox('찾을 단어를 입력하세요'); body.appendChild(input);
@@ -265,7 +265,7 @@ function runTextboxChange(group, keyword, caseSensitive, ignoreSpace, wholeWord,
     }
     _tbCloseFn = cleanupAndClose;
 
-    const panel = createPanel(PANEL_ID, posCenter, cleanupAndClose), cb = getPanelBody(panel);
+    const panel = createPanel(PANEL_ID, posCenter, cleanupAndClose, true), cb = getPanelBody(panel);
     function setFixed() { Object.assign(cb.style, { display:'block', flex:'none', height:'', maxHeight:'', overflowY:'visible', padding:'4px 16px 16px' }); }
 
     // 현재 매치가 있는 textarea 자체를 화면에 보이게 + textarea 내부 스크롤도 매치 위치로 이동

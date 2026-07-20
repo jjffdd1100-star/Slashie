@@ -91,7 +91,7 @@ export async function copyText(text) {
             ok = document.execCommand('copy'); document.body.removeChild(ta);
         } catch {}
     }
-    if (ok) toastr.success('Copied!', '', { timeOut:2000 });
+    if (ok) toastr.info('Copied!', '', { timeOut:2000 });
     else     toastr.error('Clipboard 접근이 거부되었습니다.', '', { timeOut:3000 });
 }
 
@@ -181,6 +181,38 @@ export function applyWsHlColor() {
 export function applyWsDeleteColor() {
     document.body.classList.toggle('ws-soft-delete-color', wsSettings.enhancedDelete);
 }
+
+// ── 패널 간 z-index 쟁탈 ──────────────────────────────────────────────────────
+// 두 계층으로 나눔:
+//  1) 일반 계층(raiseToTop) — /edit, /sticky, find/change, 드래그 필 수정창 등 "떠있는
+//     일반 패널" 전부가 같이 씀. 어느 쪽에도 영구적인 우위를 주지 않고 "마지막으로 탭한
+//     패널"이 그 계층 안에서 맨 위로 오게 함.
+//     기준값(3000)은 SillyTavern 자체 상단바/드로어보다는 낮게 잡은 값 — 정확한 실측값이
+//     아니라 안전하게 낮춘 추정치라, 실제로 겹치는 UI가 있으면 이 숫자만 조절하면 됨.
+//  2) 텍스트박스 검색 계층(raiseToTopHigh) — 팝업으로 뜨는 커스텀 CSS/캐릭터 설명 편집창
+//     "위에" 겹쳐서 그 안의 텍스트를 찾아야 하는 특수한 경우라, 일반 계층과 같이 낮추면
+//     안 됨(그 팝업들 자체가 이미 매우 높은 z-index라서). 기존처럼 최상단 유지.
+//
+// 카운터를 무한정 올리기만 하던 예전 방식은, 세션을 오래 쓰면서 클릭/드래그가 누적될수록
+// 계속 커지다가 결국 ST 자체 팝업의 z-index까지 넘어서 버리는 문제가 있었음(한 번 넘어서면
+// 그 뒤로 계속 위에 뜸). 대신 "지금 열려있는 패널들의 순서(MRU)"만 기억해뒀다가, 그 순서대로
+// base, base+1, base+2 ... 처럼 작은 범위 안에서만 z-index를 다시 매겨서 절대 커지지 않게 함.
+function makeRaiser(base) {
+    const order = [];
+    return function raise(panel) {
+        const i = order.indexOf(panel);
+        if (i !== -1) order.splice(i, 1);
+        order.push(panel);
+        // 이미 닫혀서 DOM에서 떨어져나간 패널은 목록에서 같이 정리(안 그러면 계속 쌓임)
+        for (let idx = order.length - 1; idx >= 0; idx--) {
+            if (!order[idx].isConnected) order.splice(idx, 1);
+        }
+        order.forEach((p, idx) => p.style.setProperty('z-index', String(base + idx), 'important'));
+    };
+}
+
+export const raiseToTop = makeRaiser(3000);
+export const raiseToTopHigh = makeRaiser(10000000);
 
 // ── /move 스냅샷 ───────────────────────────────────────────────────────────
 // 숫자 3개(blockStart, blockEnd, target)뿐이라 가볍고, 다른 기능과도 무관해서
